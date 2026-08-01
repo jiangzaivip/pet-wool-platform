@@ -1683,7 +1683,7 @@ async function confirmDeleteUser() {
       headers: { 'x-confirm-delete': 'true' },
     })
     deleteUserTarget.value = null
-    await loadAll()
+    await refreshAdminTables('overview', 'users', 'audit')
     showAdminMessage(t('admin.deleted'))
   })
 }
@@ -1748,7 +1748,7 @@ async function saveUserForm() {
     userUnsavedConfirmOpen.value = false
     userFormSnapshot.value = ''
     resetUserForm()
-    await loadAll()
+    await refreshAdminTables('overview', 'users', 'audit')
     showAdminMessage(t('admin.saved'))
   })
 }
@@ -1897,6 +1897,51 @@ function assertAuth() {
   return true
 }
 
+function normalizeUsers(data: any[]) {
+  return data.map(user => ({ ...user, tags_text: (user.tags || []).join(', ') }))
+}
+
+async function refreshOverview() {
+  overview.value = await api<Record<string, number>>('/admin/overview')
+}
+
+async function refreshAuditLogs() {
+  auditLogs.value = await api<any[]>('/admin/audit-logs')
+}
+
+async function refreshUsers() {
+  users.value = normalizeUsers(await api<any[]>('/admin/users'))
+}
+
+async function refreshCategories() {
+  const categoryData = await api<Category[]>('/admin/categories')
+  categories.value = categoryData
+  if (!productForm.category_id && categoryData[0]) productForm.category_id = categoryData[0].id
+}
+
+async function refreshProducts() {
+  products.value = await api<Product[]>('/admin/products')
+}
+
+async function refreshOrders() {
+  const orderData = await api<Order[]>('/admin/orders')
+  orders.value = orderData
+  if (selectedOrder.value) {
+    selectedOrder.value = orderData.find((order: any) => order.id === selectedOrder.value?.id) || selectedOrder.value
+  }
+}
+
+async function refreshAdminTables(...parts: Array<'overview' | 'users' | 'categories' | 'products' | 'orders' | 'audit'>) {
+  await Promise.all(parts.map((part) => {
+    if (part === 'overview') return refreshOverview()
+    if (part === 'users') return refreshUsers()
+    if (part === 'categories') return refreshCategories()
+    if (part === 'products') return refreshProducts()
+    if (part === 'orders') return refreshOrders()
+    return refreshAuditLogs()
+  }))
+}
+
 async function loadAll() {
   if (!assertAuth()) {
     initialLoading.value = false
@@ -1915,7 +1960,7 @@ async function loadAll() {
       api<any[]>('/admin/audit-logs')
     ])
     overview.value = overviewData
-    users.value = userData.map(user => ({ ...user, tags_text: (user.tags || []).join(', ') }))
+    users.value = normalizeUsers(userData)
     categories.value = categoryData
     products.value = productData
     orders.value = orderData
@@ -2040,7 +2085,7 @@ async function saveCategory() {
     if (categoryForm.id) await api(`/admin/categories/${categoryForm.id}`, { method: 'PUT', body })
     else await api('/admin/categories', { method: 'POST', body })
     discardCategoryFormChanges()
-    await loadAll()
+    await refreshAdminTables('overview', 'categories', 'products', 'audit')
     showAdminMessage(t('admin.saved'))
   })
 }
@@ -2063,7 +2108,7 @@ async function confirmDeleteCategory() {
       headers: { 'x-confirm-delete': 'true' }
     })
     deleteCategoryTarget.value = null
-    await loadAll()
+    await refreshAdminTables('overview', 'categories', 'products', 'audit')
     showAdminMessage(t('admin.deleted'))
   })
 }
@@ -2230,7 +2275,7 @@ async function saveProduct() {
     if (productForm.id) await api(`/admin/products/${productForm.id}`, { method: 'PUT', body })
     else await api('/admin/products', { method: 'POST', body })
     discardProductFormChanges()
-    await loadAll()
+    await refreshAdminTables('overview', 'products', 'audit')
     showAdminMessage(t('admin.saved'))
   })
 }
@@ -2253,7 +2298,7 @@ async function confirmDeleteProduct() {
       headers: { 'x-confirm-delete': 'true' }
     })
     deleteProductTarget.value = null
-    await loadAll()
+    await refreshAdminTables('overview', 'products', 'audit')
     showAdminMessage(t('admin.deleted'))
   })
 }
@@ -2281,10 +2326,10 @@ async function updateOrder(order: any, field: 'status' | 'payment' | 'note') {
     if (index >= 0) orders.value[index] = latestOrder
     if (selectedOrder.value?.id === latestOrder.id) selectedOrder.value = latestOrder
     if (field === 'note') clearOrderNoteDirty(latestOrder.id)
-    overview.value = await api<Record<string, number>>('/admin/overview')
+    await refreshOverview()
     showAdminMessage(t('admin.saved'))
   } catch (e: any) {
-    await loadAll()
+    await refreshOrders().catch(() => {})
     showAdminMessage(adminErrorMessage(e))
   } finally {
     savingAction.value = ''
@@ -2332,12 +2377,15 @@ async function toggleOrderFlag(order: any) {
   if (savingAction.value) return
   savingAction.value = key
   try {
-    await api(`/admin/orders/${order.id}/flag`, { method: 'PUT', body: JSON.stringify({ flagged: next, revision: order.revision || 0, updated_at: order.updated_at || '' }) })
-    await loadAll()
+    const updatedOrder = await api<Order>(`/admin/orders/${order.id}/flag`, { method: 'PUT', body: JSON.stringify({ flagged: next, revision: order.revision || 0, updated_at: order.updated_at || '' }) })
+    const index = orders.value.findIndex((item: any) => item.id === updatedOrder.id)
+    if (index >= 0) orders.value[index] = updatedOrder
+    if (selectedOrder.value?.id === updatedOrder.id) selectedOrder.value = updatedOrder
+    await refreshOverview()
     showAdminMessage(next ? t('admin.flagged') : t('admin.unflagged'))
   } catch (e: any) {
     order.flagged = !next
-    await loadAll()
+    await refreshOrders().catch(() => {})
     showAdminMessage(adminErrorMessage(e))
   } finally {
     savingAction.value = ''
@@ -2357,7 +2405,7 @@ async function updateUser(user: any) {
         followups: Array.isArray(user.followups) ? user.followups : [],
       })
     })
-    await loadAll()
+    await refreshAdminTables('overview', 'users', 'audit')
     showAdminMessage(t('admin.saved'))
   })
 }
