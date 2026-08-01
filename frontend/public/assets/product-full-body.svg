@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 700" role="img" aria-label="full body wool felt pet portrait">
+  <rect width="900" height="700" fill="#eef4ec"/>
+  <ellipse cx="452" cy="590" rx="250" ry="42" fill="#cfd8c8"/>
+  <ellipse cx="468" cy="415" rx="118" ry="150" fill="#b98156"/>
+  <circle cx="455" cy="248" r="112" fill="#c28b62"/>
+  <ellipse cx="372" cy="210" rx="42" ry="78" fill="#714c38" transform="rotate(-26 372 210)"/>
+  <ellipse cx="540" cy="210" rx="42" ry="78" fill="#714c38" transform="rotate(26 540 210)"/>
+  <circle cx="420" cy="250" r="12" fill="#211714"/>
+  <circle cx="492" cy="250" r="12" fill="#211714"/>
+  <ellipse cx="456" cy="302" rx="31" ry="22" fill="#2d211c"/>
+  <path d="M404 347c34 28 72 28 108 0" fill="none" stroke="#2d211c" stroke-width="8" stroke-linecap="round"/>
+  <path d="M356 503c-38 34-54 76-43 105" fill="none" stroke="#7a5138" stroke-width="42" stroke-linecap="round"/>
+  <path d="M566 503c38 34 54 76 43 105" fill="none" stroke="#7a5138" stroke-width="42" stroke-linecap="round"/>
+  <path d="M562 410c104 32 142 88 124 150" fill="none" stroke="#8d6043" stroke-width="32" stroke-linecap="round"/>
+  <g opacity=".3" stroke="#fff8ec" stroke-width="5" stroke-linecap="round">
+    <path d="M362 260c52-42 128-44 190-8"/>
+    <path d="M358 420c68-36 151-37 221 0"/>
+    <path d="M378 520c58 38 121 39 174 2"/>
+  </g>
+</svg>

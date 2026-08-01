@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 700" role="img" aria-label="pet memorial wool ornament">
+  <rect width="900" height="700" fill="#f5e9eb"/>
+  <circle cx="450" cy="330" r="210" fill="#fffdf8"/>
+  <circle cx="450" cy="330" r="168" fill="#e6d2bd"/>
+  <path d="M450 102v78" stroke="#d8b56d" stroke-width="18" stroke-linecap="round"/>
+  <ellipse cx="450" cy="345" rx="110" ry="126" fill="#b88355"/>
+  <ellipse cx="382" cy="270" rx="36" ry="66" fill="#6c4833" transform="rotate(-22 382 270)"/>
+  <ellipse cx="516" cy="270" rx="36" ry="66" fill="#6c4833" transform="rotate(22 516 270)"/>
+  <circle cx="415" cy="338" r="11" fill="#211714"/>
+  <circle cx="486" cy="338" r="11" fill="#211714"/>
+  <ellipse cx="452" cy="385" rx="27" ry="20" fill="#2d211c"/>
+  <path d="M407 430c31 25 66 25 96 0" fill="none" stroke="#2d211c" stroke-width="8" stroke-linecap="round"/>
+  <path d="M312 535c88 68 191 70 278 0" fill="none" stroke="#d8b56d" stroke-width="18" stroke-linecap="round"/>
+</svg>

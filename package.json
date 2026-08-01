@@ -1,0 +1,11 @@
+{
+  "scripts": {
+    "build": "npm --prefix frontend run build",
+    "test:e2e": "node test-results/e2e-check.mjs",
+    "smoke": "bash scripts/smoke-check.sh",
+    "export:postgres": "node scripts/export-store-postgres.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.1"
+  }
+}

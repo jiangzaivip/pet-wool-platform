@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Build and cache output
+dist/
+build/
+coverage/
+.cache/
+*.tsbuildinfo
+backend/target/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!.env.deploy.example
+!**/.env.example
+
+# Runtime data
+api-node/data/
+api-node/uploads/
+api-node/backups/
+logs/
+release/
+workspace/generated/
+
+# Test artifacts
+test-results/*
+!test-results/*.mjs
+!test-results/*.md
+
+# Local workspace artifacts
+.agents/
+.attachments/
+.codex/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo

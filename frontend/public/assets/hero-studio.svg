@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 820" role="img" aria-label="wool felt pet portrait studio">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f6efe2"/>
+      <stop offset="0.55" stop-color="#e7efe5"/>
+      <stop offset="1" stop-color="#d8c9b0"/>
+    </linearGradient>
+    <radialGradient id="felt" cx="45%" cy="35%" r="70%">
+      <stop offset="0" stop-color="#f6d7ad"/>
+      <stop offset="0.55" stop-color="#b67c51"/>
+      <stop offset="1" stop-color="#5a3624"/>
+    </radialGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="22" stdDeviation="22" flood-color="#1f2f28" flood-opacity=".22"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="820" fill="url(#bg)"/>
+  <circle cx="1020" cy="120" r="170" fill="#fff9ed" opacity=".7"/>
+  <circle cx="220" cy="700" r="210" fill="#ffffff" opacity=".45"/>
+  <g filter="url(#soft)">
+    <rect x="150" y="155" width="470" height="520" rx="32" fill="#fffdf8"/>
+    <rect x="190" y="195" width="390" height="440" rx="20" fill="#e9dcc7"/>
+    <ellipse cx="385" cy="455" rx="140" ry="150" fill="url(#felt)"/>
+    <ellipse cx="305" cy="360" rx="48" ry="84" fill="#7a4c32" transform="rotate(-24 305 360)"/>
+    <ellipse cx="470" cy="360" rx="48" ry="84" fill="#7a4c32" transform="rotate(24 470 360)"/>
+    <circle cx="338" cy="438" r="15" fill="#211814"/>
+    <circle cx="438" cy="438" r="15" fill="#211814"/>
+    <ellipse cx="390" cy="493" rx="34" ry="24" fill="#2c201c"/>
+    <path d="M330 535c42 35 93 35 133 0" fill="none" stroke="#2c201c" stroke-width="10" stroke-linecap="round"/>
+    <g opacity=".34" stroke="#fff8ee" stroke-width="5" stroke-linecap="round">
+      <path d="M290 415c45-54 122-78 198-28"/>
+      <path d="M280 472c62-33 153-34 220 4"/>
+      <path d="M320 560c45 34 98 36 146 4"/>
+    </g>
+  </g>
+  <g filter="url(#soft)">
+    <rect x="700" y="220" width="330" height="360" rx="28" fill="#fffdf8"/>
+    <rect x="735" y="255" width="260" height="250" rx="130" fill="#f3e8d8"/>
+    <ellipse cx="866" cy="375" rx="92" ry="112" fill="#b98960"/>
+    <ellipse cx="820" cy="315" rx="36" ry="58" fill="#6f4c38" transform="rotate(-22 820 315)"/>
+    <ellipse cx="916" cy="315" rx="36" ry="58" fill="#6f4c38" transform="rotate(22 916 315)"/>
+    <circle cx="835" cy="372" r="10" fill="#1d1714"/>
+    <circle cx="897" cy="372" r="10" fill="#1d1714"/>
+    <path d="M843 420c22 17 48 17 70 0" fill="none" stroke="#2d211c" stroke-width="8" stroke-linecap="round"/>
+    <rect x="765" y="535" width="200" height="18" rx="9" fill="#d8b56d"/>
+  </g>
+  <path d="M665 680c62-80 164-118 304-116" fill="none" stroke="#2c3a32" stroke-width="18" stroke-linecap="round" opacity=".18"/>
+</svg>
