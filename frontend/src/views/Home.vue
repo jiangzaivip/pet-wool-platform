@@ -3,7 +3,7 @@ import { onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ArrowRight, Check, MessageCircle, ShoppingBag } from '@lucide/vue'
 import { api, type Category, money, type Product, type SiteSettings } from '../api'
-import { productImage, useProductImageFallback } from '../contentImages'
+import { productFrameImage, productImage, useProductImageFallback } from '../contentImages'
 import { setHead, setJsonLd } from '../head'
 
 const { locale, t, tm } = useI18n()
@@ -20,7 +20,7 @@ const categoryImages = [
   'https://images.unsplash.com/photo-1516734212186-a967f81ad0d7?auto=format&fit=crop&w=900&q=82',
   'https://images.unsplash.com/photo-1574158622682-e40e69881006?auto=format&fit=crop&w=900&q=82'
 ]
-const afterImage = '/assets/product-frame.svg'
+const afterImage = productFrameImage
 
 function updateSeo() {
   setHead(t('home.seoTitle'), t('home.seoDescription'), {
