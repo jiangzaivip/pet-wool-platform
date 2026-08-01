@@ -353,7 +353,12 @@ label { display: grid; gap: 8px; font-weight: 730; color: var(--muted); font-siz
 .premium-upload .filepond--file-status { font-size: 11px; }
 .upload-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: -4px; color: var(--muted); font-size: 12px; }
 .upload-meta span { border: 1px solid var(--line); border-radius: 999px; padding: 4px 9px; background: color-mix(in srgb, var(--surface-soft) 60%, #fff 40%); line-height: 1.25; }
-.upload-status { color: var(--accent); font-size: 13px; font-weight: 760; }
+.upload-status { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line)); border-radius: 8px; padding: 10px 12px; background: color-mix(in srgb, var(--accent-2) 12%, #fff 88%); color: var(--text); font-size: 13px; box-shadow: 0 8px 18px rgba(48, 58, 46, .06); }
+.upload-status > span:last-child { display: grid; gap: 2px; min-width: 0; }
+.upload-status strong { color: var(--accent); font-size: 13px; font-weight: 820; line-height: 1.25; }
+.upload-status small { color: var(--muted); font-size: 12px; line-height: 1.35; }
+.loading-spinner { flex: 0 0 auto; width: 20px; height: 20px; border: 2.5px solid color-mix(in srgb, var(--accent) 18%, #fff 82%); border-top-color: var(--accent); border-radius: 50%; animation: loading-spin .78s linear infinite; }
+@keyframes loading-spin { to { transform: rotate(360deg); } }
 .photo-preview { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
 .photo-preview.enhanced { padding-top: 2px; }
 .photo-preview img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); box-shadow: 0 8px 16px rgba(48, 58, 46, .08); }

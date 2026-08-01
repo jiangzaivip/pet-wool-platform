@@ -837,7 +837,13 @@ watch(() => form.photo_urls, saveDraft, { deep: true })
             <span>{{ t('order.uploadMetaTypes') }}</span>
             <span>{{ t('order.uploadMetaSize', { max: maxPhotoCount }) }}</span>
           </div>
-          <span v-if="uploading" class="upload-status">{{ t('order.uploading') }}</span>
+          <div v-if="uploading" class="upload-status" role="status" aria-live="polite">
+            <span class="loading-spinner" aria-hidden="true"></span>
+            <span>
+              <strong>{{ t('order.uploading') }}</strong>
+              <small>{{ t('order.uploadWaitingHint') }}</small>
+            </span>
+          </div>
           <span v-if="uploadError" class="form-message error">{{ uploadError }}</span>
           <div v-if="form.photo_urls.length" class="photo-preview enhanced">
             <figure v-for="url in form.photo_urls" :key="url" class="photo-tile">
