@@ -73,6 +73,7 @@ const categoryLabels = {
   'rabbit-frame-portrait': { zh: '兔子羊毛毡相框', en: 'Rabbit Wool Felt Frame', ko: '토끼 양모펠트 액자' },
   'dog-full-body-portrait': { zh: '狗狗羊毛毡全身像', en: 'Dog Full-Body Wool Felt', ko: '강아지 양모펠트 전신' },
   'cat-full-body-portrait': { zh: '猫咪羊毛毡全身像', en: 'Cat Full-Body Wool Felt', ko: '고양이 양모펠트 전신' },
+  'rabbit-full-body-portrait': { zh: '兔子羊毛毡全身像', en: 'Rabbit Full-Body Wool Felt', ko: '토끼 양모펠트 전신' },
   'multi-pet-group-portrait': { zh: '多宠物羊毛毡作品', en: 'Multi-Pet Wool Felt', ko: '다중 반려동물 양모펠트' },
   'memorial-frame': { zh: '宠物纪念相框', en: 'Memorial Frame', ko: '메모리얼 액자' },
   'memorial-full-body-portrait': { zh: '宠物纪念全身作品', en: 'Memorial Full-Body Work', ko: '메모리얼 전신 작품' },
@@ -357,13 +358,14 @@ function defaultCategories() {
       id: id(),
       slug: '3d-full-body-pet-portraits',
       title: '3D 宠物全身类肖像',
-      description: '狗狗全身肖像、猫猫全身肖像、多宠物合照肖像，重点还原体态、姿势和毛色细节。',
-      seo_title: '3D 宠物全身类肖像 | 狗狗全身 猫猫全身 多宠物合照',
-      seo_description: '定制 3D 羊毛毡宠物全身肖像，支持狗狗全身、猫猫全身和多宠物合照肖像。',
+      description: '狗狗全身肖像、猫猫全身肖像、兔子全身肖像和多宠物合照肖像，重点还原体态、姿势和毛色细节。',
+      seo_title: '3D 宠物全身类肖像 | 狗狗全身 猫猫全身 兔子全身 多宠物合照',
+      seo_description: '定制 3D 羊毛毡宠物全身肖像，支持狗狗全身、猫猫全身、兔子全身和多宠物合照肖像。',
       image_url: '/assets/product-full-body.svg',
       children: [
         { slug: 'dog-full-body-portrait', title: '狗狗全身肖像', description: '还原狗狗坐姿、站姿、毛色和体态比例。' },
         { slug: 'cat-full-body-portrait', title: '猫猫全身肖像', description: '适合猫咪坐姿、趴姿和特色花纹定制。' },
+        { slug: 'rabbit-full-body-portrait', title: '兔子全身肖像', description: '适合兔子坐姿、耳朵形态和毛色层次定制。' },
         { slug: 'multi-pet-group-portrait', title: '多宠物合照肖像', description: '把多只宠物做成同一组收藏作品。' },
       ],
       sort_order: 2,
@@ -521,6 +523,30 @@ function defaultProducts(categories = defaultCategories()) {
     {
       id: id(),
       category_id: bySlug['3d-full-body-pet-portraits'],
+      subcategory_slug: 'rabbit-full-body-portrait',
+      slug: 'custom-rabbit-full-body-portrait',
+      title: '3D 兔子全身羊毛毡肖像',
+      subtitle: '还原兔子姿态、耳朵和毛色层次',
+      description: 'Custom rabbit full body felted portrait，适合兔子坐姿、趴姿和特色毛色定制。通过细节照片还原耳朵形态、身体比例、脚掌和神情，是适合收藏和纪念的手工宠物肖像。',
+      base_price_cents: 260000,
+      currency: 'CNY',
+      deposit_percent: 50,
+      image_url: '/assets/product-full-body.svg',
+      images: ['/assets/product-full-body.svg'],
+      options: fullBodyOptions(),
+      tags: ['Birthday Gift', 'Handmade', 'Wool Felt', 'Realistic Style'],
+      use_cases: ['Birthday Gift', 'Memorial Gift', 'Christmas Gift'],
+      alt_text: 'custom full body rabbit wool felt portrait realistic handmade gift',
+      seo_title: '3D 兔子全身羊毛毡肖像 | Custom Rabbit Full Body Portrait',
+      seo_description: '兔子全身羊毛毡肖像定制，支持多尺寸和真实风格还原。',
+      faqs: [{ question: '兔子全身肖像需要哪些照片？', answer: '建议提供正面、侧面、背面、全身、耳朵、脚掌和毛色细节照片。' }],
+      status: 'published',
+      sort_order: 6,
+      created_at: now(),
+    },
+    {
+      id: id(),
+      category_id: bySlug['3d-full-body-pet-portraits'],
       subcategory_slug: 'multi-pet-group-portrait',
       slug: 'custom-multi-pet-group-portrait',
       title: '多宠物合照羊毛毡肖像',
@@ -539,7 +565,7 @@ function defaultProducts(categories = defaultCategories()) {
       seo_description: '多宠物合照羊毛毡肖像定制，把多只宠物做成同一组手工纪念作品。',
       faqs: [{ question: '多宠物可以用不同照片合成吗？', answer: '可以，只要每只宠物都有清晰正面和全身参考照片。' }],
       status: 'published',
-      sort_order: 6,
+      sort_order: 7,
       created_at: now(),
     },
     {
@@ -563,7 +589,7 @@ function defaultProducts(categories = defaultCategories()) {
       seo_description: '宠物纪念相框定制，适合作为离世宠物纪念礼物和家人慰问礼物。',
       faqs: [{ question: '可以加入宠物毛发吗？', answer: '如客户愿意寄送材料，可在制作前沟通是否加入少量毛发作为纪念。' }],
       status: 'published',
-      sort_order: 7,
+      sort_order: 8,
       created_at: now(),
     },
     {
@@ -587,7 +613,7 @@ function defaultProducts(categories = defaultCategories()) {
       seo_description: '宠物纪念全身肖像定制，用手工羊毛毡保留宠物的完整身影。',
       faqs: [{ question: '纪念全身肖像制作多久？', answer: '通常 4-8 周，复杂毛色、多宠物或大尺寸可能需要更久。' }],
       status: 'published',
-      sort_order: 8,
+      sort_order: 9,
       created_at: now(),
     },
   ]
@@ -713,13 +739,18 @@ function migrateStore(store) {
     const existing = store.categories.find((category) => category.slug === seededCategory.slug)
     if (existing) {
       if (!existing.children?.length) changed = true
+      const existingChildrenBySlug = new Map((existing.children || []).map((child) => [child.slug, child]))
+      const children = seededCategory.children.map((seededChild) => ({
+        ...seededChild,
+        ...(existingChildrenBySlug.get(seededChild.slug) || {}),
+      }))
       Object.assign(existing, {
         ...existing,
         description: seededCategory.description,
         seo_title: seededCategory.seo_title,
         seo_description: seededCategory.seo_description,
         image_url: existing.image_url || seededCategory.image_url,
-        children: seededCategory.children,
+        children,
       })
     } else {
       store.categories.push(seededCategory)

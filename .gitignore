@@ -34,6 +34,7 @@ test-results/*
 .agents/
 .attachments/
 .codex/
+*.rar
 
 # OS/editor noise
 .DS_Store
