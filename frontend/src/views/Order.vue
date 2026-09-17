@@ -15,6 +15,10 @@ const { locale, t } = useI18n()
 const FilePond = vueFilePond(FilePondPluginFileValidateType, FilePondPluginFileValidateSize)
 const route = useRoute()
 const router = useRouter()
+
+// Order is a stateful workflow rather than a simple form. The local draft,
+// upload queue, order creation request, and PayPal approval flow all share the
+// same selected product and client request id.
 const products = ref<Product[]>([])
 const message = ref('')
 const messageTone = ref<'error' | 'success'>('error')
@@ -86,6 +90,8 @@ function isValidDraftPhotoUrl(value: unknown) {
   return typeof value === 'string' && /^\/uploads\/[0-9]+-[a-f0-9-]+\.(png|jpe?g|webp)$/i.test(value)
 }
 
+// Only server-shaped upload URLs are restored from local storage. This avoids
+// turning an old or tampered draft into arbitrary image requests.
 function validOptions(product?: Product | null) {
   return (product?.options || []).filter(option => option?.id && Number(option.price_cents || 0) > 0)
 }
@@ -538,20 +544,12 @@ async function submit() {
     resetOrderFormAfterSuccess(payload.email, payload.customer_name)
     draftEnabled.value = true
     try {
-      paypalOrder.value = await api('/paypal/create-order', {
-        method: 'POST',
-        body: JSON.stringify({
-          order_id: result.id,
-          return_path: '/order?paypal_return=1',
-          cancel_path: '/order?paypal_cancel=1',
-        })
-      })
+      await renderOrderPaypalButtons()
       if (seq !== submitSeq) return
       showOrderMessage(t('order.created', { orderNo: result.order_no }), 'success')
-      await renderOrderPaypalButtons()
     } catch {
       if (seq !== submitSeq) return
-      showOrderMessage(t('order.createdPayLater', { orderNo: result.order_no }), 'success')
+      showOrderMessage(t('order.createdPayLater', { orderNo: result.order_no }), 'error')
     }
   } catch (e: any) {
     if (seq !== submitSeq) return
@@ -587,9 +585,35 @@ async function captureApprovedPaypalOrder(paypalOrderId = paypalOrder.value?.id)
   showOrderMessage(t('order.paid', { orderNo: order.value.order_no }), 'success')
 }
 
+async function requestPaypalOrder(orderId: string) {
+  return api<any>('/paypal/create-order', {
+    method: 'POST',
+    body: JSON.stringify({
+      order_id: orderId,
+      return_path: '/order?paypal_return=1',
+      cancel_path: '/order?paypal_cancel=1',
+    })
+  })
+}
+
+async function retryPaypalPayment() {
+  if (!order.value || loading.value) return
+  loading.value = true
+  message.value = ''
+  paypalButtonError.value = ''
+  try {
+    await renderOrderPaypalButtons()
+    showOrderMessage(t('order.created', { orderNo: order.value.order_no }), 'success')
+  } catch {
+    showOrderMessage(t('order.createdPayLater', { orderNo: order.value.order_no }), 'error')
+  } finally {
+    loading.value = false
+  }
+}
+
 async function renderOrderPaypalButtons() {
   resetPaypalButtons()
-  if (!paypalOrder.value || paypalOrder.value.mock || !order.value || paypalOrder.value.order?.id !== order.value.id) return
+  if (!order.value || ['paid', 'deposit_paid'].includes(order.value.payment_status)) return
   const clientId = String(site.value.paypal?.client_id || '').trim()
   const currency = String(order.value.currency || selected.value?.currency || paypalCurrency.value || 'USD').trim().toUpperCase()
   if (!clientId) {
@@ -608,9 +632,23 @@ async function renderOrderPaypalButtons() {
     const paypal = await loadPaypalSdk({ clientId, currency })
     if (seq !== paypalRenderSeq) return
     clearPaypalContainer(target)
+    const createPaypalOrder = async () => {
+      if (paypalOrder.value?.order?.id === order.value?.id && paypalOrder.value?.id) {
+        return paypalOrder.value.id
+      }
+      try {
+        const result = await requestPaypalOrder(order.value.id)
+        paypalOrder.value = result
+        if (result.mock) throw new Error('paypal mock cannot render SDK buttons')
+        return result.id
+      } catch (error) {
+        paypalButtonError.value = t('order.paypalButtonError')
+        throw error
+      }
+    }
     const buttons = paypal.Buttons({
       style: { layout: 'vertical', color: 'gold', shape: 'rect', label: 'paypal', height: 44 },
-      createOrder: async () => paypalOrder.value?.id,
+      createOrder: createPaypalOrder,
       onApprove: async (data: any) => {
         loading.value = true
         try {
@@ -644,7 +682,7 @@ async function renderOrderPaypalButtons() {
       const fields = await renderPaypalCardFields({
         paypal,
         targets: cardTargets as any,
-        createOrder: async () => paypalOrder.value?.id,
+        createOrder: createPaypalOrder,
         onApprove: async (data: any) => {
           loading.value = true
           try {
@@ -880,7 +918,7 @@ watch(() => form.photo_urls, saveDraft, { deep: true })
             <p><span>{{ t('order.remainingBalance') }}</span><strong>{{ money(remainingAfterPayment, selected.currency) }}</strong></p>
           </div>
         </div>
-        <div class="pre-submit-checklist">
+        <div v-if="!order" class="pre-submit-checklist">
           <h3>{{ t('order.preSubmitTitle') }}</h3>
           <p class="muted">{{ t('order.preSubmitDesc') }}</p>
           <div v-for="item in preSubmitChecks" :key="item.key" :class="['pre-submit-item', { ready: item.ready }]">
@@ -891,7 +929,7 @@ watch(() => form.photo_urls, saveDraft, { deep: true })
             </div>
           </div>
         </div>
-        <section v-if="paypalOrder?.order?.id === order?.id && !paypalOrder?.mock" class="paypal-inline-panel">
+        <section v-if="order && !['paid', 'deposit_paid'].includes(order.payment_status) && paypalAvailableForSelected" class="paypal-inline-panel">
           <div>
             <strong>{{ t('order.paypalInlineTitle') }}</strong>
             <span>{{ t('order.paypalInlineDesc') }}</span>
@@ -911,14 +949,25 @@ watch(() => form.photo_urls, saveDraft, { deep: true })
           </div>
           <p v-if="paypalButtonLoading" class="muted">{{ t('order.paypalButtonLoading') }}</p>
           <p v-if="paypalButtonError" class="form-message error">{{ paypalButtonError }}</p>
+          <button v-if="paypalButtonError && !paypalOrder" class="button ghost" type="button" :disabled="loading" @click="retryPaypalPayment">
+            {{ loading ? t('common.loading') : t('account.continuePay') }}
+          </button>
         </section>
         <button v-if="paypalOrder?.order?.id === order?.id && paypalOrder?.mock" class="button ghost paypal-confirm-button" type="button" :disabled="loading" @click="capturePaypal">{{ loading ? t('common.loading') : t('order.paypalMock') }}</button>
         <p v-if="message && messageTone === 'success'" class="form-message success">{{ message }}</p>
+        <p v-if="message && messageTone === 'error' && order" class="form-message error">{{ message }}</p>
         <div v-if="order" class="summary-actions">
           <div class="order-success-next">
             <strong>{{ t('order.successNextTitle') }}</strong>
             <span>{{ t('order.successNextDesc') }}</span>
           </div>
+          <button
+            v-if="!paypalOrder && paypalButtonError && paypalAvailableForSelected && !['paid', 'deposit_paid'].includes(order.payment_status)"
+            class="button primary"
+            type="button"
+            :disabled="loading"
+            @click="retryPaypalPayment"
+          >{{ loading ? t('common.loading') : t('account.continuePay') }}</button>
           <RouterLink class="button primary" :to="accountLink">{{ t('order.viewAccount') }}</RouterLink>
           <a
             v-if="order && !paypalOrder && supportContact"

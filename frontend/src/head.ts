@@ -39,6 +39,8 @@ function metaText(value: string, limit = 240) {
 }
 
 export function setHead(title: string, description = '', options: { canonical?: string; image?: string; robots?: string } = {}) {
+  // Views call this on navigation. Updating existing tags instead of appending
+  // new ones keeps the document head deterministic during SPA transitions.
   const safeTitle = metaText(title, 90)
   const safeDescription = metaText(description, 260)
   document.title = safeTitle

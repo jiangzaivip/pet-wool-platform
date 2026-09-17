@@ -1,3 +1,5 @@
+// Creates a validated, timestamped snapshot of the JSON store and uploads.
+// Backups may contain payment credentials and must be handled as secrets.
 import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -113,14 +115,22 @@ async function validateStore(store, uploadsBase = uploadDir) {
   if (Array.isArray(store.site.reviews)) {
     for (const item of store.site.reviews) {
       const rating = Number(item?.rating)
+      const images = Array.isArray(item?.images) ? item.images : [item?.pet_image, item?.work_image].filter(Boolean)
       if (!item || typeof item !== 'object'
         || !hasValidLength(item.name, 1, 120)
         || !hasValidLength(item.country, 1, 80)
         || !Number.isInteger(rating) || rating < 1 || rating > 5
+        || (item.status && !['published', 'hidden'].includes(String(item.status)))
         || !hasValidLength(item.title || item.translations?.zh?.title, 1, 200)
         || !hasValidLength(item.content || item.translations?.zh?.content, 1, 2000)
+        || images.length > 24
+        || images.some((image) => !isValidSiteImageReference(image))
+        || (item.avatar_url && !isValidSiteImageReference(item.avatar_url))
         || (item.product_slug && !isValidSlug(item.product_slug))) {
         throw new Error('site reviews contains invalid item')
+      }
+      for (const image of [...images, item.avatar_url].filter(Boolean)) {
+        await validateUploadReference({ owner: `review ${item.name || item.id}`, value: image, uploadsBase })
       }
     }
   }

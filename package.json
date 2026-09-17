@@ -1,11 +1,17 @@
 {
   "scripts": {
     "build": "npm --prefix frontend run build",
+    "release:package": "bash scripts/package-release.sh",
     "test:e2e": "node test-results/e2e-check.mjs",
     "smoke": "bash scripts/smoke-check.sh",
-    "export:postgres": "node scripts/export-store-postgres.mjs"
+    "export:postgres": "node scripts/export-store-postgres.mjs",
+    "production:check": "node scripts/production-check.mjs",
+    "production:paypal-check": "node scripts/paypal-live-check.mjs"
   },
   "devDependencies": {
     "playwright": "^1.61.1"
+  },
+  "dependencies": {
+    "pg": "^8.23.0"
   }
 }

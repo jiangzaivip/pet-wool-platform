@@ -1,135 +1,138 @@
 # Pet Wool Platform 部署说明
 
-本部署包已经包含：
+本文件是当前发布流程的唯一操作入口。旧的 nginx/Vite 运行方式只适用于历史
+服务器，不要把旧文档中的手动复制和单独启动命令混用于当前发布。
 
-- 前端构建产物：`frontend/dist/`
-- Node API 后端：`api-node/server.mjs`
-- 当前业务数据：`api-node/data/store.json`
-- 当前上传文件：`api-node/uploads/`
-- 启动脚本：`start.sh`、`stop.sh`、`restart.sh`
+## 1. 发布到生产
 
-目标机器只需要安装 Node.js 18 或更新版本。运行此部署包不需要执行 `npm install`，也不强制要求 nginx。
+发布前准备一份不提交到 Git 的生产环境文件，例如
+`/root/secure/pet-wool.production.env`。至少要配置：
 
-## 1. 解压并启动
+- `NODE_ENV=production`
+- `PUBLIC_BASE_URL=https://正式域名`
+- 非默认的管理员账号和密钥
+- `PAYPAL_MOCK=false`
+- PayPal live Client ID、Secret、Webhook ID、模式和币种在管理后台配置
 
-```bash
-tar -xzf pet-wool-platform-deploy-*.tar.gz
-cd pet-wool-platform
-bash start.sh
-```
-
-启动后访问：
-
-```text
-官网：http://服务器IP:8888/
-管理端：http://服务器IP:8888/admin
-健康检查：http://服务器IP:8888/health
-```
-
-默认管理端账号：
-
-```text
-Email：admin@example.com
-Password：admin123456
-```
-
-上线前必须修改管理员密码和密钥。
-
-## 2. 常用命令
+部署目标必须显式指定，避免把代码传到错误服务器：
 
 ```bash
-bash start.sh
-bash stop.sh
-bash restart.sh
-tail -f logs/pet-wool.log
-bash scripts/smoke-check.sh
+DEPLOY_HOST=生产服务器地址 \
+DEPLOY_USER=ubuntu \
+DEPLOY_DIR=/opt/pet-wool-platform \
+DEPLOY_KEY=/root/pet-wool-platform/.deploy/production_ed25519 \
+DEPLOY_ENV_FILE=/root/secure/pet-wool.production.env \
+DEPLOY_UPDATE_ENV=true \
+bash deploy.sh
 ```
 
-如果要换端口：
+`deploy.sh` 会按 `frontend/package-lock.json` 安装前端依赖并构建，然后执行远端端口和数据检查、依赖安装、生产配置检查、
+PayPal OAuth 凭据探测、systemd 重启、健康检查和 smoke check。新版本验证失败
+会尝试恢复发布前备份。
+
+默认必须重新构建前端。只有确认 `frontend/dist/` 已由已验证的源码构建生成，
+且当前机器暂时无法安装依赖时，才可以显式使用 `DEPLOY_SKIP_BUILD=true`；该开关不会跳过远端生产检查。
+
+正常更新代码时会保留远端 `.env` 和生产数据，不要设置
+`DEPLOY_BOOTSTRAP_DATA=true`。只有全新服务器并且确认要安装本地数据快照时才允许：
 
 ```bash
-PORT=8899 bash start.sh
+DEPLOY_BOOTSTRAP_DATA=true
 ```
 
-## 3. 生产配置
+如果历史服务器仍由 nginx 在 `8888` 对外反代，明确使用旧拓扑：
 
-需要覆盖默认配置时复制环境变量模板：
+```bash
+DEPLOY_HOST=生产服务器地址 \
+DEPLOY_DIR=/root/pet-wool-platform \
+DEPLOY_SERVICE_NAME=pet-wool-api \
+DEPLOY_SERVICE_HOST=127.0.0.1 \
+DEPLOY_PORT=8082 \
+DEPLOY_SERVE_FRONTEND=false \
+bash deploy.sh
+```
+
+该模式要求 nginx 已经反代 `/api`、`/uploads` 和 `/health` 到
+`127.0.0.1:8082`；不要让 Node 服务同时绑定 nginx 的 `8888`。
+
+## 2. 发布检查
+
+```bash
+npm run production:check
+npm run build
+```
+
+正式 PayPal 凭据探测只验证 OAuth，不创建订单、不扣款：
+
+```bash
+set -a
+. /root/secure/pet-wool.production.env
+set +a
+PROJECT_ROOT_DIR=/opt/pet-wool-platform npm run production:paypal-check
+```
+
+## 3. 手动启动（仅维护）
+
+解压完整发布包后：
 
 ```bash
 cp .env.deploy.example .env
-nano .env
-bash restart.sh
+bash start.sh
 ```
 
-重点配置项：
+生产服务建议使用 `deploy.sh` 安装的 systemd。`start.sh` 只适合维护和隔离检查。
 
-- `PUBLIC_BASE_URL`：正式访问地址，例如 `https://example.com`
-- `ADMIN_PASSWORD_HASH`：管理员密码的 SHA-256 哈希
-- `ADMIN_SESSION_SECRET`、`USER_TOKEN_SECRET`：长随机字符串
-- `PAYPAL_CLIENT_ID`、`PAYPAL_SECRET`、`PAYPAL_WEBHOOK_ID`：正式 PayPal 配置
-- `PAYPAL_MOCK=false`：正式收款时必须关闭 mock
+## 4. 生产配置
 
-生成 SHA-256 密码哈希示例：
+环境变量模板见 `.env.deploy.example`。PayPal 账号配置只使用管理后台保存的站点配置，
+`.env` 不再配置 PayPal 凭据、模式、Webhook 或币种。
 
-```bash
-node -e "const {createHash}=require('crypto'); console.log(createHash('sha256').update('你的新密码').digest('hex'))"
-```
+关键配置：
 
-## 4. systemd 常驻运行
+- `PUBLIC_BASE_URL` 必须是正式 HTTPS 域名，PayPal 回跳地址使用它生成。
+- `PAYPAL_MOCK=false`，PayPal 模式必须在管理后台设置为 `live`。
+- 管理端的 Client ID、Secret、Webhook ID 必须来自同一个 live App。
+- PayPal 后台 Webhook URL：`https://正式域名/api/paypal/webhook`。
+- 管理端的 Webhook ID 填 ID，不要填 Webhook URL。
+
+## 5. systemd 常驻运行
 
 在部署目录内执行：
 
 ```bash
 sudo bash install-systemd.sh
-```
-
-之后用 systemd 管理：
-
-```bash
 sudo systemctl status pet-wool-platform
 sudo systemctl restart pet-wool-platform
 sudo journalctl -u pet-wool-platform -f
 ```
 
-## 5. 数据备份和恢复
-
-备份当前运营数据：
+## 6. 数据备份和恢复
 
 ```bash
 node scripts/backup-data.mjs
-```
-
-恢复前先 dry-run 校验：
-
-```bash
 node scripts/restore-data.mjs --dry-run api-node/backups/<备份目录名>
-```
-
-确认后恢复：
-
-```bash
 node scripts/restore-data.mjs --apply api-node/backups/<备份目录名>
-bash restart.sh
 ```
 
-备份包含完整 `store.json` 和上传文件，可能包含 PayPal Secret 或 Webhook ID，按敏感文件保存。
+备份包含完整 `store.json` 和上传文件，可能包含 PayPal Secret 或 Webhook ID，
+必须按敏感文件保存。恢复脚本会在覆盖前自动创建恢复前备份。
 
-## 6. nginx 可选反代
+## 7. nginx 可选反代
 
-如果需要用域名和 HTTPS，可以让 nginx 反代到本服务：
+如果使用 HTTPS 域名反代到当前服务：
 
 ```nginx
 server {
-    listen 80;
+    listen 443 ssl;
     server_name example.com;
 
     location / {
         proxy_pass http://127.0.0.1:8888;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto https;
     }
 }
 ```
 
-配置 nginx 后，`.env` 里把 `PUBLIC_BASE_URL` 改成正式域名。
+配置 nginx 后，`.env` 中的 `PUBLIC_BASE_URL` 必须保持为正式 HTTPS 域名。

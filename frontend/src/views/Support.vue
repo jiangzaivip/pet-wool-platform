@@ -2,14 +2,15 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
-import { Check, ChevronLeft, ChevronRight, Clock, Mail } from '@lucide/vue'
-import { api, supportContacts, type SiteSettings } from '../api'
-import { productFallbackImage } from '../contentImages'
+import { Camera, Check, ChevronLeft, ChevronRight, CirclePlay, Clock, Headphones, Mail, Music2 } from '@lucide/vue'
+import { api, socialLinks, supportContacts, type Product, type SiteSettings } from '../api'
+import { productFallbackImage, productImage } from '../contentImages'
 import { setHead, setJsonLd } from '../head'
 
 const { locale, t, tm } = useI18n()
 const route = useRoute()
 const site = ref<SiteSettings>({})
+const products = ref<Product[]>([])
 const loading = ref(true)
 const loadError = ref('')
 const openFaqId = ref('')
@@ -41,6 +42,11 @@ function supportContactUrl(link: { url: string }) {
     params.set('body', lines.join('\n'))
   }
   return `${baseUrl}?${params.toString()}`
+}
+
+function reviewProduct(review: any) {
+  const slug = String(review?.product_slug || '').trim()
+  return products.value.find((product) => product.slug === slug) || null
 }
 
 function updateStructuredData() {
@@ -84,7 +90,13 @@ async function loadSupport() {
   loading.value = true
   loadError.value = ''
   try {
-    site.value = await api<SiteSettings>(`/site?lang=${locale.value}`)
+    const [siteResult, productResult] = await Promise.allSettled([
+      api<SiteSettings>(`/site?lang=${locale.value}`),
+      api<Product[]>(`/products?lang=${locale.value}`)
+    ])
+    if (siteResult.status === 'rejected') throw siteResult.reason
+    site.value = siteResult.value
+    products.value = productResult.status === 'fulfilled' ? productResult.value : []
     openFaqId.value = ''
     reviewIndex.value = 0
     updateStructuredData()
@@ -99,6 +111,11 @@ async function loadSupport() {
 
 function policyText(key: 'care' | 'shipping' | 'refund') {
   return site.value.policies?.[key] || t(`support.${key}Fallback`)
+}
+
+function reviewImages(review: any) {
+  if (Array.isArray(review?.images) && review.images.length) return review.images
+  return [review?.pet_image, review?.work_image].filter(Boolean)
 }
 
 function toggleFaq(id: string) {
@@ -159,12 +176,22 @@ watch(locale, loadSupport)
       <section class="support-contact-card">
         <div>
           <p class="eyebrow mini">{{ t('support.contactTitle') }}</p>
-          <h2>{{ t('detail.consult') }}</h2>
-          <p>{{ contactLinks.length ? t('support.contactDesc') : t('support.contactFallback') }}</p>
+          <h2>{{ t('support.consultHead') }}</h2>
+          <p>{{ t('support.contactDesc') }}</p>
           <div class="contact-business-meta">
-            <span v-if="site.brand?.email"><Mail :size="15" />{{ t('support.businessEmail') }}: {{ site.brand.email }}</span>
+            <span><Headphones :size="15" /><a :href="'https://pf.kakao.com/_UWErX'" target="_blank" rel="noopener noreferrer">{{ t('support.kakaoChannel') }}: {{ t('support.brandName') }}</a></span>
+            <span><Headphones :size="15" /><a :href="'https://wa.me/8613583155893'" target="_blank" rel="noopener noreferrer">{{ t('support.whatsappConsult') }}: {{ t('support.brandName') }}</a></span>
             <span><Clock :size="15" />{{ t('support.businessHours') }}</span>
             <span><Clock :size="15" />{{ t('support.replyTime') }}</span>
+            <span v-if="site.brand?.email"><Mail :size="15" />{{ t('support.businessEmail') }}: {{ site.brand.email }}</span>
+          </div>
+          <div class="sns-links">
+            <a v-for="sns in socialLinks" :key="sns.key" :href="sns.url" target="_blank" rel="noopener noreferrer">
+              <Camera v-if="sns.key === 'instagram'" :size="15" />
+              <Music2 v-else-if="sns.key === 'tiktok'" :size="15" />
+              <CirclePlay v-else :size="15" />
+              <span>{{ sns.label }}<em>{{ sns.handle }}</em></span>
+            </a>
           </div>
           <p v-if="supportContext.hasValue" class="muted support-context">
             {{ t('support.contextTitle') }}
@@ -181,7 +208,7 @@ watch(locale, loadSupport)
             :href="supportContactUrl(link)"
             :target="link.external ? '_blank' : undefined"
             :rel="link.external ? 'noopener noreferrer' : undefined"
-          >{{ t('detail.consultWith', { label: link.label }) }}</a>
+          >{{ t('support.contactCta') }}</a>
           <RouterLink v-if="!contactLinks.length" class="button primary" to="/order">{{ t('support.startOrder') }}</RouterLink>
         </div>
       </section>
@@ -225,17 +252,37 @@ watch(locale, loadSupport)
         </div>
         <div class="review-carousel" @touchstart.passive="onReviewTouchStart" @touchend.passive="onReviewTouchEnd">
           <article v-if="activeReview" :key="activeReview.id" class="review-card featured-review">
-            <div v-if="activeReview.pet_image || activeReview.work_image" class="review-comparison">
-              <img v-if="activeReview.pet_image" :src="activeReview.pet_image" :alt="`${activeReview.name} pet photo`" loading="lazy" decoding="async" />
-              <img v-if="activeReview.work_image" :src="activeReview.work_image" :alt="`${activeReview.name} WoolBuddy work`" loading="lazy" decoding="async" />
+            <div v-if="reviewImages(activeReview).length" class="review-comparison">
+              <img
+                v-for="(image, index) in reviewImages(activeReview)"
+                :key="`${activeReview.id}-image-${index}`"
+                :src="image"
+                :alt="`${activeReview.name} review image ${Number(index) + 1}`"
+                loading="lazy"
+                decoding="async"
+              />
             </div>
             <div class="review-copy">
-              <img v-if="activeReview.avatar_url" class="review-avatar" :src="activeReview.avatar_url" :alt="activeReview.name" loading="lazy" decoding="async" />
+              <div class="review-meta">
+                <img v-if="activeReview.avatar_url" class="review-avatar" :src="activeReview.avatar_url" :alt="activeReview.name" loading="lazy" decoding="async" />
+                <div>
+                  <strong>{{ activeReview.name }}</strong>
+                  <small>{{ activeReview.country }}</small>
+                </div>
+              </div>
               <div class="rating" :aria-label="`${activeReview.rating} stars`">★★★★★</div>
+              <RouterLink
+                v-if="reviewProduct(activeReview)"
+                class="review-product-link"
+                :to="`/products/${activeReview.product_slug}`"
+              >
+                <img :src="productImage(reviewProduct(activeReview)!)" :alt="reviewProduct(activeReview)!.title" loading="lazy" decoding="async" />
+                <span><small>{{ t('support.reviewProductLabel') }}</small><strong>{{ reviewProduct(activeReview)!.title }}</strong></span>
+                <ChevronRight :size="16" />
+              </RouterLink>
               <h3>{{ activeReview.title }}</h3>
-              <p>{{ activeReview.content }}</p>
-              <small>{{ activeReview.name }} · {{ activeReview.country }}</small>
               <video v-if="activeReview.video_url" :src="activeReview.video_url" controls preload="metadata"></video>
+              <p class="review-comment preserve-lines">{{ activeReview.content }}</p>
             </div>
           </article>
           <article v-else class="review-card">

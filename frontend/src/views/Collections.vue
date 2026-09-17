@@ -20,6 +20,9 @@ const loadError = ref('')
 const productLoadError = ref('')
 const productCache = new Map<string, Product[]>()
 let productRequestId = 0
+
+// Category changes can trigger overlapping requests. The request id and cache
+// below prevent a slower previous response from replacing the current filter.
 const supportContact = computed(() => {
   return primarySupportContact(site.value, t('support.emailLabel'))
 })
@@ -248,7 +251,7 @@ watch(locale, load)
             </RouterLink>
             <div class="product-body">
               <p class="eyebrow mini">{{ product.category?.title }}</p>
-              <h3>{{ product.title }}</h3>
+              <h3><RouterLink class="product-title-link" :to="`/products/${product.slug}`">{{ product.title }}</RouterLink></h3>
               <p>{{ product.subtitle }}</p>
               <div class="product-card-proof"><span>★★★★★</span><small>{{ t('detail.cardCycle') }}</small><small>{{ t('detail.cardHandmade') }}</small></div>
               <div class="tag-row compact"><span v-for="tag in product.tags?.slice(0, 6)" :key="tag">{{ tag }}</span></div>

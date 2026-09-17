@@ -12,7 +12,7 @@
 - PayPal 支付流程
 - Google 登录入口，可配置真实 OAuth Client ID
 - 用户订单页
-- 右下角 TALK / LINE / AI 机器人
+- 右下角 KakaoTalk / WhatsApp / AI 机器人
 - 可选外部社媒链接，只展示已经配置的链接
 - 护理说明、FAQ、运输政策、退款政策、评价
 - 博客列表和详情
@@ -81,8 +81,9 @@
 
 当前支持：
 
-- TALK
-- LINE
+- KakaoTalk 账号
+- WhatsApp 账号
+- 品牌邮箱
 - AI 机器人
 
 AI 机器人当前是规则问答，不依赖外部 AI 服务。知识库在 `api-node/server.mjs` 的默认站点内容里初始化，并保存在 `api-node/data/store.json`。

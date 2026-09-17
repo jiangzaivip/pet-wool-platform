@@ -191,7 +191,7 @@ watch(() => route.params.slug, load)
             :href="supportUrlForPost()"
             :target="supportContact.external ? '_blank' : undefined"
             :rel="supportContact.external ? 'noopener noreferrer' : undefined"
-          >{{ t('detail.consultWith', { label: supportContact.label }) }}</a>
+          >{{ t('support.contactCta') }}</a>
           <RouterLink v-else class="button ghost" to="/support">{{ t('blog.contactSupport') }}</RouterLink>
           <RouterLink class="button ghost" to="/blog">{{ t('common.backToBlog') }}</RouterLink>
         </div>

@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Pet Wool PostgreSQL SQL snapshot backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Asia/Shanghai
+Persistent=true
+Unit=pet-wool-sql-backup.service
+
+[Install]
+WantedBy=timers.target

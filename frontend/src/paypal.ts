@@ -17,6 +17,9 @@ type PaypalCardFieldsOptions = {
   onApprove: (data: any) => void | Promise<void>
 }
 
+// PayPal's browser SDK is loaded on demand and cached by client/currency. The
+// cache key matters because changing either value requires a new SDK instance.
+
 declare global {
   interface Window {
     paypal?: any
@@ -40,7 +43,7 @@ export async function loadPaypalSdk({ clientId, currency }: PaypalSdkOptions) {
   document.querySelectorAll('script[data-pet-wool-paypal-sdk="true"]').forEach((script) => script.remove())
   window.paypal = undefined
   window.__petWoolPaypalSdkKey = key
-  window.__petWoolPaypalSdkPromise = new Promise((resolve, reject) => {
+  const promise = new Promise<any>((resolve, reject) => {
     const script = document.createElement('script')
     const params = new URLSearchParams({
       'client-id': normalizedClientId,
@@ -55,13 +58,28 @@ export async function loadPaypalSdk({ clientId, currency }: PaypalSdkOptions) {
     script.onerror = () => reject(new Error('paypal sdk failed'))
     document.head.appendChild(script)
   })
-  return window.__petWoolPaypalSdkPromise
+  window.__petWoolPaypalSdkPromise = promise
+  try {
+    return await promise
+  } catch (error) {
+    // A transient CDN, ad-blocker, or network failure must not poison all
+    // subsequent payment attempts until the customer reloads the page.
+    if (window.__petWoolPaypalSdkKey === key) {
+      window.__petWoolPaypalSdkKey = undefined
+      window.__petWoolPaypalSdkPromise = undefined
+      window.paypal = undefined
+    }
+    document.querySelectorAll('script[data-pet-wool-paypal-sdk="true"]').forEach((script) => script.remove())
+    throw error
+  }
 }
 
 export function cardFieldsEligible(paypal: any) {
   return Boolean(paypal?.CardFields && paypal.CardFields().isEligible?.())
 }
 
+// Card fields are optional: PayPal may report them as ineligible by region or
+// account configuration, while the standard PayPal button remains available.
 export async function renderPaypalCardFields({ paypal, targets, createOrder, onApprove }: PaypalCardFieldsOptions) {
   if (!cardFieldsEligible(paypal)) return null
   const cardFields = paypal.CardFields({

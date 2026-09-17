@@ -1,0 +1,10 @@
+[Unit]
+Description=Pet Wool PostgreSQL SQL snapshot backup
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/pet-wool-platform
+EnvironmentFile=-/opt/pet-wool-platform/.env
+Environment=PROJECT_ROOT_DIR=/opt/pet-wool-platform
+ExecStart=/usr/bin/node /opt/pet-wool-platform/scripts/backup-sql.mjs

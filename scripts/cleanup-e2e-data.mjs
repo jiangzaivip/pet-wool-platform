@@ -1,3 +1,5 @@
+// Finds Playwright-generated records by stable test prefixes. Destructive work
+// requires an explicit confirmation flag.
 import { randomUUID } from 'node:crypto'
 import { readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'

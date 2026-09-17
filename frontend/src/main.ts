@@ -19,6 +19,8 @@ import { i18n } from './i18n'
 import { safeGetLocalStorage } from './api'
 import './style.css'
 
+// Keep route declarations in one place so navigation, SEO updates, and the
+// admin guard all observe the same URL model.
 const router = createRouter({
   history: createWebHistory(),
   routes: [
@@ -42,6 +44,8 @@ const router = createRouter({
 })
 
 router.beforeEach((to) => {
+  // The API remains the authority for admin authorization. This guard only
+  // avoids rendering the dashboard shell for an obviously anonymous browser.
   if (to.path.startsWith('/admin/dashboard') && !safeGetLocalStorage('admin_token')) {
     return '/admin'
   }

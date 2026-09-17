@@ -25,7 +25,7 @@ const selectedOption = computed<ProductOption | undefined>(() => product.value?.
 const canOrder = computed(() => Boolean(product.value?.id && selectedOption.value?.id))
 const supportContact = computed(() => {
   const contacts = supportContacts(site.value, t('support.emailLabel'))
-  return contacts.find(contact => contact.key === 'talk') || contacts.find(contact => contact.key === 'email') || null
+  return contacts.find(contact => contact.key === 'kakao') || contacts.find(contact => contact.key === 'whatsapp') || contacts.find(contact => contact.key === 'email') || null
 })
 const detailFaqs = computed(() => {
   const seen = new Set<string>()
@@ -293,7 +293,7 @@ watch(() => route.params.slug, load)
             :href="supportUrlForProduct()"
             :target="supportContact.external ? '_blank' : undefined"
             :rel="supportContact.external ? 'noopener noreferrer' : undefined"
-          >{{ t('detail.consultWith', { label: supportContact.label }) }}</a>
+          >{{ t('support.contactCta') }}</a>
           <RouterLink v-else class="button ghost" to="/support">{{ t('detail.consult') }}</RouterLink>
         </div>
         <div class="assurance-grid">

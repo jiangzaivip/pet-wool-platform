@@ -2,15 +2,22 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { api, money, safeGetLocalStorage, safeRemoveLocalStorage, type Category, type Product, type SiteSettings, type Order } from '../api'
+import { ChevronLeft, ChevronRight, ImagePlus, Languages, Trash2, Upload, X, ZoomIn } from '@lucide/vue'
+import { api, money, safeGetLocalStorage, safeRemoveLocalStorage, upload, type Category, type Product, type SiteSettings, type Order } from '../api'
 import { resolveContentImage } from '../contentImages'
 
 const { t } = useI18n()
 const router = useRouter()
+
+// The admin view deliberately keeps all operator workflows in one screen so
+// tabs can share the same freshly loaded site/catalog/order data. API-level
+// permissions and transition validation remain authoritative on the server.
 type AdminLang = 'zh' | 'en' | 'ko'
 type BlogTranslationFields = { title: string; excerpt: string; content: string }
+type ReviewTranslationFields = { title: string; content: string }
+type ProductTranslationFields = { title: string; subtitle: string; description: string; alt_text: string; seo_title: string; seo_description: string; options_text: string }
 const adminLangs: AdminLang[] = ['zh', 'en', 'ko']
-const tab = ref<'overview' | 'users' | 'categories' | 'products' | 'orders' | 'blog' | 'site' | 'audit' | 'readiness'>('overview')
+const tab = ref<'overview' | 'users' | 'categories' | 'products' | 'orders' | 'reviews' | 'blog' | 'paypal' | 'site' | 'audit' | 'readiness'>('overview')
 const overview = ref<Record<string, number>>({})
 const users = ref<any[]>([])
 const userSearch = ref('')
@@ -24,6 +31,7 @@ const paymentStatusFilter = ref('')
 const orderFlagFilter = ref('')
 const orderSort = ref('latest')
 const blogSearch = ref('')
+const reviewSearch = ref('')
 const userCopyText = ref('')
 const contactCopyText = ref('')
 const orderCopyOutputTitle = ref('')
@@ -33,7 +41,15 @@ const initialLoading = ref(true)
 const loadError = ref('')
 const brokenPhotoKeys = ref(new Set<string>())
 const siteRestoreInput = ref<HTMLInputElement | null>(null)
+const reviewAvatarInput = ref<HTMLInputElement | null>(null)
+const reviewImageInput = ref<HTMLInputElement | null>(null)
+const reviewUploadBusy = ref<'avatar' | 'images' | ''>('')
+const siteTranslationGenerating = ref(false)
+const productTranslationGenerating = ref(false)
 const paymentSecretsVisible = ref(false)
+const paypalHelpOpen = ref(false)
+const paypalTestResult = ref<any>(null)
+const paypalTestError = ref('')
 const fullBackupConfirmOpen = ref(false)
 const siteRestoreUnsavedConfirmOpen = ref(false)
 const dirtyOrderNoteIds = ref(new Set<string>())
@@ -53,8 +69,8 @@ const paymentStatuses = ['unpaid', 'deposit_paid', 'paid', 'balance_due', 'refun
 const userStatuses = ['active', 'vip', 'blocked']
 const publishStatuses = ['published', 'hidden']
 const contactReady = computed(() => (
-  Boolean(contactForm.talk_enabled && validHttpUrl(contactForm.talk_url))
-  || Boolean(contactForm.line_enabled && validHttpUrl(contactForm.line_url))
+  Boolean(contactForm.kakao_enabled && (contactForm.kakao_id.trim() || validHttpUrl(contactForm.kakao_url)))
+  || Boolean(contactForm.whatsapp_enabled && (contactForm.whatsapp_id.trim() || validHttpUrl(contactForm.whatsapp_url)))
 ))
 const selectedProductCategory = computed(() => categories.value.find((category) => category.id === productForm.category_id))
 const productCategoryHidden = computed(() => selectedProductCategory.value?.status === 'hidden')
@@ -67,6 +83,8 @@ const publicCatalogReady = computed(() => {
   return products.value.some((product) => product.status === 'published' && publicCategoryIds.has(product.category_id || '') && Array.isArray(product.options) && product.options.length > 0)
 })
 const readinessItems = computed(() => {
+  // Readiness is a deployment checklist, not an authorization mechanism. It
+  // surfaces missing configuration while the API still validates every save.
   const paypalLiveReady = paymentForm.paypal_mode === 'live'
     && Boolean(paymentForm.paypal_client_id.trim())
     && (
@@ -81,7 +99,7 @@ const readinessItems = computed(() => {
       label: paypalLiveReady ? t('admin.readinessPaypalLive') : t('admin.readinessPaypalSandbox'),
       status: paypalLiveReady ? t('admin.readinessReady') : t('admin.readinessActionRequired'),
       tone: paypalLiveReady ? 'ok' : 'warn',
-      target: 'site',
+      target: 'paypal',
     },
     {
       key: 'contact',
@@ -316,6 +334,23 @@ const filteredBlogs = computed(() => {
 })
 const pagedBlogs = computed(() => filteredBlogs.value.slice((blogPage.value - 1) * pageSize, blogPage.value * pageSize))
 const blogPageCount = computed(() => Math.max(1, Math.ceil(filteredBlogs.value.length / pageSize)))
+const filteredReviews = computed(() => {
+  const keyword = reviewSearch.value.trim().toLowerCase()
+  const reviews = Array.isArray(site.value.reviews) ? site.value.reviews : []
+  return reviews.filter((review: any) => {
+    const haystack = [
+      review.name,
+      review.country,
+      review.status,
+      review.product_slug,
+      reviewField(review, 'title', 'zh'),
+      reviewField(review, 'content', 'zh'),
+      reviewField(review, 'title', 'en'),
+      reviewField(review, 'title', 'ko'),
+    ].join(' ').toLowerCase()
+    return !keyword || haystack.includes(keyword)
+  })
+})
 function pageSummary(current: number, total: number) {
   if (!total) return t('admin.paginationSummary', { start: 0, end: 0, total: 0 })
   const start = (current - 1) * pageSize + 1
@@ -389,14 +424,44 @@ const blogI18n = reactive<Record<AdminLang, BlogTranslationFields>>({
   en: { title: '', excerpt: '', content: '' },
   ko: { title: '', excerpt: '', content: '' },
 })
+const reviewForm = reactive({
+  id: '',
+  name: '',
+  country: 'Korea',
+  rating: 5,
+  status: 'published',
+  product_slug: '',
+  avatar_url: '',
+  images_text: '',
+  video_url: '',
+})
+const reviewI18n = reactive<Record<AdminLang, ReviewTranslationFields>>({
+  zh: { title: '', content: '' },
+  en: { title: '', content: '' },
+  ko: { title: '', content: '' },
+})
 const siteForm = reactive({ brand_name: '', email: '', instagram: '', tracking_url_template: '', care: '', shipping: '', refund: '', faq_text: '', reviews_text: '', blog_text: '' })
 const policyI18n = reactive<Record<'zh' | 'en' | 'ko', { care: string; shipping: string; refund: string }>>({
   zh: { care: '', shipping: '', refund: '' },
   en: { care: '', shipping: '', refund: '' },
   ko: { care: '', shipping: '', refund: '' },
 })
+const faqI18n = reactive<Record<AdminLang, string>>({
+  zh: '',
+  en: '',
+  ko: '',
+})
 const paymentForm = reactive({ paypal_enabled: true, paypal_mode: 'sandbox', paypal_client_id: '', paypal_secret: '', paypal_webhook_id: '', currency: 'USD' })
-const contactForm = reactive({ talk_enabled: true, talk_label: 'TALK', talk_url: '', line_enabled: true, line_label: 'LINE', line_url: '' })
+const contactForm = reactive({
+  kakao_enabled: true,
+  kakao_label: 'KakaoTalk',
+  kakao_id: 'WoolBuddyShop',
+  kakao_url: '',
+  whatsapp_enabled: true,
+  whatsapp_label: 'WhatsApp',
+  whatsapp_id: 'WoolBuddy',
+  whatsapp_url: '',
+})
 const paypalSupportedCurrencies = new Set([
   'AUD', 'BRL', 'CAD', 'CHF', 'CZK', 'DKK', 'EUR', 'GBP', 'HKD', 'HUF',
   'ILS', 'JPY', 'MXN', 'MYR', 'NOK', 'NZD', 'PHP', 'PLN', 'SEK', 'SGD',
@@ -408,6 +473,14 @@ const paypalWebhookUrl = computed(() => `${window.location.origin}/api/paypal/we
 const siteFormSnapshot = ref('')
 const siteFormDirty = computed(() => stableSiteFormState() !== siteFormSnapshot.value)
 const selectedOrder = ref<any>(null)
+const orderLightbox = ref<{ order: any; index: number } | null>(null)
+const orderLightboxImages = computed(() => (
+  Array.isArray(orderLightbox.value?.order?.photo_urls)
+    ? orderLightbox.value.order.photo_urls.filter((url: unknown): url is string => Boolean(String(url || '').trim()))
+    : []
+))
+const orderLightboxImage = computed(() => orderLightboxImages.value[orderLightbox.value?.index || 0] || '')
+const orderLightboxIndex = computed(() => Math.min(orderLightbox.value?.index || 0, Math.max(0, orderLightboxImages.value.length - 1)))
 const categoryModalOpen = ref(false)
 const productModalOpen = ref(false)
 const userModalOpen = ref(false)
@@ -421,9 +494,13 @@ const blogModalOpen = ref(false)
 const blogUnsavedConfirmOpen = ref(false)
 const blogFormSnapshot = ref('')
 const blogEditorKey = ref(0)
+const reviewModalOpen = ref(false)
+const reviewUnsavedConfirmOpen = ref(false)
+const reviewFormSnapshot = ref('')
 const deleteCategoryTarget = ref<Category | null>(null)
 const deleteProductTarget = ref<Product | null>(null)
 const deleteBlogTarget = ref<any | null>(null)
+const deleteReviewTarget = ref<any | null>(null)
 const deleteUserTarget = ref<any | null>(null)
 const orderChangeConfirm = ref<{ order: any; field: 'status' | 'payment'; previous: string; next: string } | null>(null)
 const modalOpen = computed(() => Boolean(
@@ -431,13 +508,17 @@ const modalOpen = computed(() => Boolean(
   || categoryModalOpen.value
   || productModalOpen.value
   || blogModalOpen.value
+  || reviewModalOpen.value
   || userModalOpen.value
   || deleteCategoryTarget.value
   || deleteProductTarget.value
   || deleteBlogTarget.value
+  || deleteReviewTarget.value
   || deleteUserTarget.value
   || orderChangeConfirm.value
   || fullBackupConfirmOpen.value
+  || paypalHelpOpen.value
+  || orderLightbox.value
 ))
 const userForm = reactive({
   id: '',
@@ -511,6 +592,29 @@ function orderFulfillmentChecks(order: any) {
 
 function statusText(value: string) {
   return t(`status.${value}`)
+}
+
+function openOrderImage(order: any, index: number) {
+  const images = Array.isArray(order?.photo_urls) ? order.photo_urls : []
+  if (!images[index]) return
+  orderLightbox.value = { order, index }
+}
+
+function closeOrderLightbox() {
+  orderLightbox.value = null
+}
+
+function moveOrderImage(direction: number) {
+  if (!orderLightbox.value || orderLightboxImages.value.length < 2) return
+  const nextIndex = (orderLightboxIndex.value + direction + orderLightboxImages.value.length) % orderLightboxImages.value.length
+  orderLightbox.value = { ...orderLightbox.value, index: nextIndex }
+}
+
+function handleOrderLightboxKeydown(event: KeyboardEvent) {
+  if (!orderLightbox.value) return
+  if (event.key === 'Escape') closeOrderLightbox()
+  if (event.key === 'ArrowLeft') moveOrderImage(-1)
+  if (event.key === 'ArrowRight') moveOrderImage(1)
 }
 
 function productCategoryTitle(product: any) {
@@ -592,10 +696,17 @@ function adminErrorMessage(error: any) {
     'paypal webhook id must not be url': t('admin.paypalWebhookIdInvalid'),
     'invalid boolean config': t('admin.booleanConfigInvalid'),
     'paypal live credentials required': t('admin.paypalLiveCredentialsRequired'),
-    'invalid talk url': t('admin.talkUrlInvalid'),
-    'valid Talk URL required': t('admin.talkUrlInvalid'),
-    'invalid line url': t('admin.lineUrlInvalid'),
-    'valid LINE URL required': t('admin.lineUrlInvalid'),
+    'paypal credentials missing': t('admin.paypalCredentialsMissing'),
+    'paypal credentials invalid': t('admin.paypalCredentialsInvalid'),
+    'paypal credentials verification failed': t('admin.paypalCredentialsVerificationFailed'),
+    'paypal mock enabled': t('admin.paypalMockEnabled'),
+    'invalid contact': t('admin.contactInvalid'),
+    'KakaoTalk contact required': t('admin.kakaoContactRequired'),
+    'WhatsApp contact required': t('admin.whatsappContactRequired'),
+    'invalid kakao url': t('admin.kakaoUrlInvalid'),
+    'valid KakaoTalk URL required': t('admin.kakaoUrlInvalid'),
+    'invalid whatsapp url': t('admin.whatsappUrlInvalid'),
+    'valid WhatsApp URL required': t('admin.whatsappUrlInvalid'),
     'faq required': t('admin.faqRequired'),
     'invalid faq': t('admin.faqInvalid'),
     'duplicate faq': t('admin.faqDuplicate'),
@@ -1151,6 +1262,68 @@ function formatBlogContent(command: string, value = '') {
 }
 
 const blogPhraseTranslations: Array<[string, string, string]> = [
+  ['3D 宠物全身类肖像', '3D Full-Body Pet Portraits', '3D 반려동물 전신 초상'],
+  ['3D 宠物全身肖像', '3D Full-Body Pet Portrait', '3D 반려동물 전신 초상'],
+  ['全身羊毛毡宠物定制', 'Custom Full-Body Wool Felt Pet', '맞춤 전신 양모펠트 반려동물 작품'],
+  ['根据照片还原宠物体态、毛色与神情', 'Recreate your pet’s posture, coat color and expression from photos', '사진을 바탕으로 반려동물의 자세, 털색과 표정을 재현합니다'],
+  ['从一张照片细致还原宠物的姿态、表情和毛发纹理。', 'A detailed recreation of your pet’s pose, expression and coat from one photo.', '사진 한 장으로 반려동물의 자세와 표정, 털결까지 정교하게 재현합니다.'],
+  ['发送照片后，由手作师逐一还原宠物的表情、毛发纹理和独特特征。', 'Send your photos and our artisan will recreate your pet’s expression, coat texture and defining features by hand.', '사진을 보내주시면 장인의 수작업으로 반려동물의 표정과 털결, 특징까지 하나하나 재현합니다.'],
+  ['我们提供制作前照片确认、发货前成品预览和局部修改服务。', 'Photo confirmation, a final preview and minor revisions are included.', '제작 전 사진 확인, 출고 전 미리보기와 부분 수정 서비스를 제공합니다.'],
+  ['上传宠物照片后，工匠会先确认细节，再开始制作。支持预览确认、局部修改和定金/尾款模式。', 'After you upload pet photos, our artisan confirms the details before production. Preview approval, minor revisions and deposit or full-payment options are supported.', '사진을 업로드하면 장인이 세부 사항을 확인한 뒤 제작을 시작합니다. 미리보기 확인, 부분 수정과 계약금 또는 전액 결제를 지원합니다.'],
+  ['厘米', 'cm', 'cm'],
+  ['宠物全身肖像', 'full-body pet portrait', '반려동물 전신 초상'],
+  ['多宠物合照', 'multi-pet group portrait', '다중 반려동물 단체 초상'],
+  ['支持定金、预览确认和全球配送', 'Deposit payment, preview approval and worldwide shipping are supported', '계약금, 미리보기 확인과 해외 배송을 지원합니다'],
+  ['6 英寸头部', '6-inch head', '6인치 머리'],
+  ['7 英寸头部', '7-inch head', '7인치 머리'],
+  ['3D 羊毛毡', '3D wool felt', '3D 양모펠트'],
+  ['羊毛毡', 'wool felt', '양모펠트'],
+  ['宠物相框', 'pet frame', '반려동물 액자'],
+  ['纪念相框', 'memorial frame', '추모 액자'],
+  ['头像相框', 'head portrait frame', '두상 액자'],
+  ['全身肖像', 'full-body portrait', '전신 초상'],
+  ['• 本作品为 100% 手工羊毛毡作品，仅供装饰和纪念。', '• This is a 100% handmade wool felt work for display and remembrance.', '• 본 작품은 100% 수작업 양모펠트 작품으로 장식 및 기념용입니다.'],
+  ['• 请勿作为玩具使用。', '• Do not use it as a toy.', '• 장난감으로 사용하지 마십시오.'],
+  ['• 避免阳光直射、水、潮湿和强烈碰撞。', '• Avoid direct sunlight, water, humidity and impact.', '• 직사광선, 물, 습기 및 강한 충격을 피해주세요.'],
+  ['• 建议放在玻璃展示盒或少尘处保存。', '• Store it in a glass case or low-dust area when possible.', '• 유리 케이스 또는 먼지가 적은 곳에 보관하는 것을 권장합니다.'],
+  ['• 表面浮毛可用小剪刀轻轻修整，请勿使用普通梳子或刷子。', '• Trim loose fibers gently with small scissors; do not use a regular comb or brush.', '• 표면에 잔털이 생기면 작은 가위로 살짝 정리해 주세요. 일반 빗이나 브러시는 사용하지 마십시오.'],
+  ['• 触摸作品前请清洁双手，并尽量减少触碰细节部位。', '• Clean your hands before touching and avoid frequent contact with fine details.', '• 작품을 만지기 전에는 손을 깨끗이 씻고 세부 부위는 자주 만지지 않는 것을 권장합니다.'],
+  ['• 确认最终作品和配送信息后发货。', '• We ship after final work and delivery details are approved.', '• 최종 작품 확인 및 배송 정보를 확인한 후 발송됩니다.'],
+  ['• 一般制作周期约 4-8 周。', '• Typical production takes about 4-8 weeks.', '• 일반 제작 기간은 약 4-8주입니다.'],
+  ['• 复杂姿势、多宠物、大型作品或旺季订单可能延长。', '• Complex poses, multiple pets, large pieces and peak seasons may take longer.', '• 복잡한 자세, 여러 마리, 대형 작품 및 성수기에는 제작 기간이 연장될 수 있습니다.'],
+  ['• 发货后通过邮件提供物流单号。', '• Tracking is provided by email after dispatch.', '• 발송 후 이메일로 운송장 번호를 안내해드립니다.'],
+  ['• 配送时长、关税及进口税按目的地国家政策执行。', '• Transit time, customs duties and import taxes follow destination-country rules.', '• 배송 기간, 관세 및 수입세는 목적지 국가의 정책에 따릅니다.'],
+  ['1. 制作开始前可取消订单。', '1. Orders may be cancelled before production starts.', '1. 제작 시작 전에는 주문을 취소할 수 있습니다.'],
+  ['2. 客户确认开始制作后，定制商品不接受无理由退款。', '2. Change-of-mind refunds are unavailable after custom production is approved.', '2. 고객 확인 후 제작이 시작되면 맞춤 제작 상품은 단순 변심으로 환불할 수 없습니다.'],
+  ['3. 制作过程中会充分进行照片确认和沟通。', '3. We confirm photos and communicate throughout production.', '3. 제작 중 고객과 충분히 사진을 확인하고 소통합니다.'],
+  ['4. 最终确认完成的作品不属于退款范围。', '4. A finally approved work is not refundable.', '4. 최종 확인이 완료된 작품은 환불 대상이 아닙니다.'],
+  ['5. 如作品与确认要求明显不符，优先提供免费修改或重制。', '5. If the work clearly differs from approved requirements, free revision or remake is prioritized.', '5. 작품이 확인된 요구사항과 명확히 다른 경우 무료 수정 또는 재제작을 우선 제공합니다.'],
+  ['6. 手工作品的细微差异属于正常范围。', '6. Minor handmade variations are normal.', '6. 수작업 특성상 미세한 차이는 정상 범위입니다.'],
+  ['7. 因客户提供照片质量导致的差异不构成退款理由。', '7. Differences caused by low-quality customer photos are not grounds for refund.', '7. 고객이 제공한 사진 품질로 인한 차이는 환불 사유가 아닙니다.'],
+  ['8. 运输破损请在收货后 48 小时内附照片联系。', '8. Report shipping damage with photos within 48 hours.', '8. 배송 중 파손은 수령 후 48시간 이내 사진과 함께 알려주세요.'],
+  ['9. 地址错误或拒收产生的费用由客户承担。', '9. Costs caused by address errors or refusal are the customer’s responsibility.', '9. 주소 오류 또는 수취 거부로 발생한 비용은 고객 부담입니다.'],
+  ['10. 海外清关延误不构成退款理由。', '10. Customs delays are not grounds for refund.', '10. 해외 통관 지연은 환불 사유가 아닙니다.'],
+  ['11. 发起 PayPal 争议前请先联系客服。', '11. Contact support before opening a PayPal dispute.', '11. PayPal 분쟁을 제기하기 전에 먼저 고객센터로 문의해 주세요.'],
+  ['12. 本政策与 PayPal 买家保护政策共同适用。', '12. This policy applies together with PayPal Buyer Protection.', '12. 본 정책은 PayPal 구매자 보호 정책과 함께 적용됩니다.'],
+  ['• 本作品为 100% 手工羊毛毡作品，仅供装饰和纪念', '• This is a 100% handmade wool felt work for display and remembrance', '• 본 작품은 100% 수작업 양모펠트 작품으로 장식 및 기념용입니다'],
+  ['需要上传多少张、什么样的照片？', 'How many and what kind of photos should I upload?', '어떤 사진을 몇 장 보내야 하나요?'],
+  ['可以只先支付定金吗？', 'Can I pay a deposit first?', '계약금만 먼저 결제할 수 있나요?'],
+  ['可以使用 PayPal 吗？', 'Can I pay with PayPal?', 'PayPal 결제가 가능한가요?'],
+  ['发货前可以确认作品吗？', 'Can I review the work before shipping?', '제작 전에 작품을 확인할 수 있나요?'],
+  ['制作中可以修改吗？', 'Can I request revisions?', '제작 중 수정이 가능한가요?'],
+  ['可以制作多只宠物吗？', 'Can you make multiple pets?', '여러 마리도 제작 가능한가요?'],
+  ['猫咪也可以制作吗？', 'Can you make cats?', '고양이도 가능한가요?'],
+  ['制作周期多久？', 'How long does production take?', '제작 기간은 얼마나 걸리나요?'],
+  ['100% 手工羊毛毡作品', '100% handmade wool felt work', '100% 수작업 양모펠트 작품'],
+  ['仅供装饰和纪念', 'for display and remembrance only', '장식 및 기념용'],
+  ['请勿作为玩具使用', 'Do not use it as a toy', '장난감으로 사용하지 마십시오'],
+  ['避免阳光直射、水、潮湿和强烈碰撞', 'Avoid direct sunlight, water, humidity and impact', '직사광선, 물, 습기 및 강한 충격을 피해주세요'],
+  ['确认最终作品和配送信息后发货', 'We ship after final work and delivery details are approved', '최종 작품 확인 및 배송 정보를 확인한 후 발송됩니다'],
+  ['一般制作周期约 4-8 周', 'Typical production takes about 4-8 weeks', '일반 제작 기간은 약 4-8주입니다'],
+  ['复杂姿势、多宠物、大型作品或旺季订单可能延长', 'Complex poses, multiple pets, large pieces and peak seasons may take longer', '복잡한 자세, 여러 마리, 대형 작품 및 성수기에는 제작 기간이 연장될 수 있습니다'],
+  ['发货后通过邮件提供物流单号', 'Tracking is provided by email after dispatch', '발송 후 이메일로 운송장 번호를 안내해드립니다'],
+  ['支持全球大多数国家和地区', 'We ship to most countries', '전 세계 대부분 국가로 배송 가능합니다'],
+  ['请联系客服', 'Please contact support', '고객센터로 문의해 주세요'],
   ['羊毛毡宠物肖像', 'wool felt pet portrait', '양모 펠트 반려동물 초상'],
   ['宠物纪念礼物', 'pet memorial gift', '반려동물 추모 선물'],
   ['定制宠物肖像', 'custom pet portrait', '맞춤 반려동물 초상'],
@@ -1192,6 +1365,63 @@ const blogPhraseTranslations: Array<[string, string, string]> = [
   ['发货', 'shipping', '배송'],
 ]
 
+const productTranslationPresets: Record<string, Record<'en' | 'ko', Partial<ProductTranslationFields>>> = {
+  'full-body-pet-replica': {
+    en: {
+      title: '3D Full-Body Pet Portrait',
+      subtitle: 'A detailed recreation of your pet’s pose, expression and coat from one photo.',
+      description: 'Send your photos and our artisan will recreate your pet’s expression, coat texture and defining features by hand.\n\nPhoto confirmation, a final preview and minor revisions are included.',
+      alt_text: 'WoolBuddy handmade 3D full-body wool felt pet portrait',
+      seo_title: '3D Full-Body Wool Felt Pet Portrait | WoolBuddy',
+      seo_description: 'Handmade 3D full-body wool felt pet portrait with deposit payment, preview approval and worldwide shipping.',
+    },
+    ko: {
+      title: '3D 반려동물 전신 초상',
+      subtitle: '사진 한 장으로 반려동물의 자세와 표정, 털결까지 정교하게 재현합니다.',
+      description: '사진을 보내주시면 장인의 수작업으로 반려동물의 표정과 털결, 특징까지 하나하나 재현합니다.\n\n제작 전 사진 확인, 출고 전 미리보기와 부분 수정 서비스를 제공합니다.',
+      alt_text: 'WoolBuddy 수제 3D 반려동물 전신 양모펠트 초상',
+      seo_title: '3D 반려동물 전신 양모펠트 초상 | WoolBuddy',
+      seo_description: '사진으로 제작하는 맞춤 3D 반려동물 전신 양모펠트 초상. 계약금, 미리보기 확인과 해외 배송을 지원합니다.',
+    },
+  },
+  'felted-photo-frame': {
+    en: {
+      title: '3D Pet Frame Portrait',
+      subtitle: 'Keep your beloved pet close in a warm, handmade framed work.',
+      description: 'Send your photos and our artisan will recreate your pet’s expression, coat texture and defining features by hand.\n\nPhoto confirmation, a final preview and minor revisions are included.',
+      alt_text: 'WoolBuddy handmade 3D wool felt pet frame portrait',
+      seo_title: '3D Wool Felt Pet Frame Portrait | WoolBuddy',
+      seo_description: 'Handmade 3D wool felt pet frame portrait with preview approval and worldwide shipping.',
+    },
+    ko: {
+      title: '3D 반려동물 액자 초상',
+      subtitle: '소중한 반려동물의 모습을 따뜻한 액자 작품으로 오래 간직하세요.',
+      description: '사진을 보내주시면 장인의 수작업으로 반려동물의 표정과 털결, 특징까지 하나하나 재현합니다.\n\n제작 전 사진 확인, 출고 전 미리보기와 부분 수정 서비스를 제공합니다.',
+      alt_text: 'WoolBuddy 수제 3D 반려동물 양모펠트 액자 초상',
+      seo_title: '3D 반려동물 양모펠트 액자 초상 | WoolBuddy',
+      seo_description: '사진으로 제작하는 맞춤 3D 반려동물 양모펠트 액자 초상. 미리보기 확인과 해외 배송을 지원합니다.',
+    },
+  },
+  'pet-memorial-ornament': {
+    en: {
+      title: '3D Pet Memorial Keepsake',
+      subtitle: 'A small pet memorial keepsake made to last.',
+      description: 'Send your photos and our artisan will recreate your pet’s expression, coat texture and defining features by hand.\n\nPhoto confirmation, a final preview and minor revisions are included.',
+      alt_text: 'WoolBuddy handmade 3D wool felt pet memorial keepsake',
+      seo_title: '3D Wool Felt Pet Memorial Keepsake | WoolBuddy',
+      seo_description: 'A small handmade wool felt pet memorial keepsake with preview approval and worldwide shipping.',
+    },
+    ko: {
+      title: '3D 반려동물 메모리얼 기념품',
+      subtitle: '작지만 오래 간직할 수 있는 반려동물 추억 기념품입니다.',
+      description: '사진을 보내주시면 장인의 수작업으로 반려동물의 표정과 털결, 특징까지 하나하나 재현합니다.\n\n제작 전 사진 확인, 출고 전 미리보기와 부분 수정 서비스를 제공합니다.',
+      alt_text: 'WoolBuddy 수제 3D 반려동물 양모펠트 메모리얼 작품',
+      seo_title: '3D 반려동물 양모펠트 메모리얼 | WoolBuddy',
+      seo_description: '사진으로 제작하는 맞춤 반려동물 양모펠트 메모리얼 기념품. 미리보기와 해외 배송을 지원합니다.',
+    },
+  },
+}
+
 function draftTranslateText(value: string, lang: Exclude<AdminLang, 'zh'>) {
   let output = String(value || '')
   const index = lang === 'en' ? 1 : 2
@@ -1215,6 +1445,173 @@ function draftTranslateHtml(value: string, lang: Exclude<AdminLang, 'zh'>) {
   }
   walk(root)
   return sanitizeBlogHtml(root.innerHTML)
+}
+
+function draftTranslateFaq(value: string, lang: Exclude<AdminLang, 'zh'>) {
+  return String(value || '').split(/\r?\n/).map((row) => {
+    if (!row.trim()) return ''
+    const separatorIndex = row.indexOf('|')
+    if (separatorIndex < 0) return draftTranslateText(row, lang)
+    const question = row.slice(0, separatorIndex)
+    const answer = row.slice(separatorIndex + 1)
+    return `${draftTranslateText(question, lang)}|${draftTranslateText(answer, lang)}`
+  }).join('\n')
+}
+
+function draftTranslateOptions(value: string, lang: Exclude<AdminLang, 'zh'>) {
+  return String(value || '').split(/\r?\n/).map((row) => {
+    if (!row.trim()) return ''
+    const [name = '', ...priceParts] = row.replace('，', ',').split(',')
+    const translatedName = draftTranslateText(name, lang)
+    return priceParts.length ? `${translatedName},${priceParts.join(',')}` : translatedName
+  }).join('\n')
+}
+
+type TranslationTarget = Exclude<AdminLang, 'zh'>
+
+async function translateAdminTexts(texts: string[], target: TranslationTarget) {
+  const response = await api<{ translations?: unknown }>('/admin/translate', {
+    method: 'POST',
+    body: JSON.stringify({ texts, target }),
+  })
+  if (!Array.isArray(response.translations) || response.translations.length !== texts.length) {
+    throw new Error(t('admin.translationResponseInvalid'))
+  }
+  return response.translations.map((value) => String(value ?? ''))
+}
+
+function translationFailureMessage(error: unknown) {
+  const detail = error instanceof Error ? error.message.trim() : ''
+  return t('admin.translationFailed', { detail: detail ? ` ${detail}` : '' })
+}
+
+async function translateProductTarget(source: ProductTranslationFields, target: TranslationTarget) {
+  const fields = ['title', 'subtitle', 'description', 'alt_text', 'seo_title', 'seo_description'] as const
+  const entries: Array<{ key: string; value: string }> = fields
+    .filter((field) => Boolean(source[field]))
+    .map((field) => ({ key: field, value: source[field] }))
+  const sourceRows = String(source.options_text || '').split(/\r?\n/)
+  sourceRows.forEach((row, index) => {
+    const [name = ''] = row.replace('，', ',').split(',')
+    if (name.trim()) entries.push({ key: `option:${index}`, value: name.trim() })
+  })
+  const translated = await translateAdminTexts(entries.map((entry) => entry.value), target)
+  const translatedByKey = new Map(entries.map((entry, index) => [entry.key, translated[index]]))
+  const result = { ...productI18n[target] }
+  for (const field of fields) {
+    if (source[field]) result[field] = translatedByKey.get(field) || ''
+  }
+  if (sourceRows.some((row) => row.trim())) {
+    result.options_text = sourceRows.map((row, index) => {
+      if (!row.trim()) return ''
+      const normalized = row.replace('，', ',')
+      const separatorIndex = normalized.indexOf(',')
+      const name = separatorIndex < 0 ? normalized : normalized.slice(0, separatorIndex)
+      if (!name.trim()) return row
+      const translatedName = translatedByKey.get(`option:${index}`) || name.trim()
+      return separatorIndex < 0 ? translatedName : `${translatedName},${normalized.slice(separatorIndex + 1).trim()}`
+    }).join('\n')
+  }
+  return result
+}
+
+async function autoTranslateProduct() {
+  const source = {
+    title: productI18n.zh.title.trim(),
+    subtitle: productI18n.zh.subtitle.trim(),
+    description: productI18n.zh.description.trim(),
+    alt_text: productI18n.zh.alt_text.trim(),
+    seo_title: productI18n.zh.seo_title.trim(),
+    seo_description: productI18n.zh.seo_description.trim(),
+    options_text: productI18n.zh.options_text.trim(),
+  }
+  if (!Object.values(source).some(Boolean)) {
+    showAdminMessage(t('admin.productTranslationSourceRequired'))
+    return
+  }
+  productTranslationGenerating.value = true
+  try {
+    const generated: Record<TranslationTarget, ProductTranslationFields> = {} as Record<TranslationTarget, ProductTranslationFields>
+    for (const lang of ['en', 'ko'] as const) {
+      generated[lang] = await translateProductTarget(source, lang)
+    }
+    Object.assign(productI18n.en, generated.en)
+    Object.assign(productI18n.ko, generated.ko)
+    showAdminMessage(t('admin.productAutoTranslated'))
+  } catch (error) {
+    showAdminMessage(translationFailureMessage(error))
+  } finally {
+    productTranslationGenerating.value = false
+  }
+}
+
+async function translateSiteTarget(source: { care: string; shipping: string; refund: string; faq: string }, target: TranslationTarget) {
+  const entries: Array<{ key: string; value: string }> = []
+  for (const field of ['care', 'shipping', 'refund'] as const) {
+    if (source[field]) entries.push({ key: field, value: source[field] })
+  }
+  const faqRows = source.faq.split(/\r?\n/)
+  faqRows.forEach((row, index) => {
+    if (!row.trim()) return
+    const separatorIndex = row.indexOf('|')
+    if (separatorIndex < 0) {
+      entries.push({ key: `faq:${index}:row`, value: row })
+      return
+    }
+    entries.push({ key: `faq:${index}:question`, value: row.slice(0, separatorIndex).trim() })
+    entries.push({ key: `faq:${index}:answer`, value: row.slice(separatorIndex + 1).trim() })
+  })
+  const translated = await translateAdminTexts(entries.map((entry) => entry.value), target)
+  const translatedByKey = new Map(entries.map((entry, index) => [entry.key, translated[index]]))
+  const result = {
+    care: policyI18n[target].care,
+    shipping: policyI18n[target].shipping,
+    refund: policyI18n[target].refund,
+    faq: faqI18n[target],
+  }
+  for (const field of ['care', 'shipping', 'refund'] as const) {
+    if (source[field]) result[field] = translatedByKey.get(field) || ''
+  }
+  if (source.faq) {
+    result.faq = faqRows.map((row, index) => {
+      if (!row.trim()) return ''
+      const separatorIndex = row.indexOf('|')
+      if (separatorIndex < 0) return translatedByKey.get(`faq:${index}:row`) || row
+      const question = translatedByKey.get(`faq:${index}:question`) || row.slice(0, separatorIndex).trim()
+      const answer = translatedByKey.get(`faq:${index}:answer`) || row.slice(separatorIndex + 1).trim()
+      return `${question}|${answer}`
+    }).join('\n')
+  }
+  return result
+}
+
+async function autoTranslateSiteContent() {
+  const source = {
+    care: policyI18n.zh.care.trim(),
+    shipping: policyI18n.zh.shipping.trim(),
+    refund: policyI18n.zh.refund.trim(),
+    faq: faqI18n.zh.trim(),
+  }
+  if (!source.care && !source.shipping && !source.refund && !source.faq) {
+    showAdminMessage(t('admin.siteTranslationSourceRequired'))
+    return
+  }
+  siteTranslationGenerating.value = true
+  try {
+    const generated: Record<TranslationTarget, { care: string; shipping: string; refund: string; faq: string }> = {} as Record<TranslationTarget, { care: string; shipping: string; refund: string; faq: string }>
+    for (const lang of ['en', 'ko'] as const) {
+      generated[lang] = await translateSiteTarget(source, lang)
+    }
+    Object.assign(policyI18n.en, { care: generated.en.care, shipping: generated.en.shipping, refund: generated.en.refund })
+    Object.assign(policyI18n.ko, { care: generated.ko.care, shipping: generated.ko.shipping, refund: generated.ko.refund })
+    faqI18n.en = generated.en.faq
+    faqI18n.ko = generated.ko.faq
+    showAdminMessage(t('admin.siteAutoTranslated'))
+  } catch (error) {
+    showAdminMessage(translationFailureMessage(error))
+  } finally {
+    siteTranslationGenerating.value = false
+  }
 }
 
 function autoTranslateBlog() {
@@ -1357,6 +1754,255 @@ async function confirmDeleteBlog() {
     syncSiteForms(savedSite)
     showAdminMessage(t('admin.blogDeleted'))
   })
+}
+
+function reviewField(review: any, field: keyof ReviewTranslationFields, lang: AdminLang = 'zh') {
+  return readTranslation(review, lang, field) || review?.[field] || ''
+}
+
+function reviewMediaUrls(review: any) {
+  if (Array.isArray(review?.images) && review.images.length) return review.images.filter(Boolean)
+  return [review?.pet_image, review?.work_image].filter(Boolean)
+}
+
+function reviewDraftImages() {
+  return String(reviewForm.images_text || '')
+    .split(/\r?\n/)
+    .map((image) => image.trim())
+    .filter(Boolean)
+}
+
+function reviewTranslationCount(review: any) {
+  return adminLangs.filter((lang) => reviewField(review, 'title', lang).trim() && reviewField(review, 'content', lang).trim()).length
+}
+
+function resetReviewForm() {
+  Object.assign(reviewForm, {
+    id: '',
+    name: '',
+    country: 'Korea',
+    rating: 5,
+    status: 'published',
+    product_slug: '',
+    avatar_url: '',
+    images_text: '',
+    video_url: '',
+  })
+  for (const lang of adminLangs) Object.assign(reviewI18n[lang], { title: '', content: '' })
+}
+
+function stableReviewFormState() {
+  return JSON.stringify({
+    form: reviewForm,
+    translations: reviewI18n,
+  })
+}
+
+function openReviewModal(review?: any) {
+  resetReviewForm()
+  reviewUnsavedConfirmOpen.value = false
+  if (review) {
+    Object.assign(reviewForm, {
+      id: review.id || '',
+      name: review.name || '',
+      country: review.country || '',
+      rating: Number(review.rating || 5),
+      status: review.status || 'published',
+      product_slug: review.product_slug || '',
+      avatar_url: review.avatar_url || '',
+      images_text: reviewMediaUrls(review).join('\n'),
+      video_url: review.video_url || '',
+    })
+    for (const lang of adminLangs) {
+      reviewI18n[lang].title = reviewField(review, 'title', lang)
+      reviewI18n[lang].content = reviewField(review, 'content', lang)
+    }
+  }
+  reviewFormSnapshot.value = stableReviewFormState()
+  reviewModalOpen.value = true
+}
+
+function closeReviewModal() {
+  if (savingAction.value === 'review-form' || reviewUploadBusy.value) return
+  if (stableReviewFormState() !== reviewFormSnapshot.value) {
+    reviewUnsavedConfirmOpen.value = true
+    return
+  }
+  discardReviewFormChanges()
+}
+
+function discardReviewFormChanges() {
+  reviewUnsavedConfirmOpen.value = false
+  reviewModalOpen.value = false
+  resetReviewForm()
+  reviewFormSnapshot.value = ''
+}
+
+function keepEditingReviewForm() {
+  reviewUnsavedConfirmOpen.value = false
+}
+
+async function uploadReviewFiles(event: Event, kind: 'avatar' | 'images') {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files || [])
+  input.value = ''
+  if (!files.length) return
+  reviewUploadBusy.value = kind
+  try {
+    const uploadedUrls: string[] = []
+    for (const file of files) {
+      const result = await upload(file)
+      if (result?.url) uploadedUrls.push(result.url)
+    }
+    if (kind === 'avatar') {
+      reviewForm.avatar_url = uploadedUrls[0] || reviewForm.avatar_url
+    } else {
+      reviewForm.images_text = [...new Set([...reviewDraftImages(), ...uploadedUrls])].join('\n')
+    }
+    showAdminMessage(t('admin.reviewUploadDone'))
+  } catch (error: any) {
+    showAdminMessage(String(error?.message || t('admin.reviewUploadFailed')))
+  } finally {
+    reviewUploadBusy.value = ''
+  }
+}
+
+function removeReviewImage(index: number) {
+  const images = reviewDraftImages()
+  images.splice(index, 1)
+  reviewForm.images_text = images.join('\n')
+}
+
+function reviewPayloadFromForm() {
+  const name = reviewForm.name.trim()
+  const country = reviewForm.country.trim()
+  const zhTitle = reviewI18n.zh.title.trim()
+  const zhContent = reviewI18n.zh.content.trim()
+  const avatarUrl = reviewForm.avatar_url.trim()
+  const images = reviewDraftImages()
+  const productSlug = reviewForm.product_slug.trim()
+  const videoUrl = reviewForm.video_url.trim()
+  const rating = Number(reviewForm.rating)
+  if (!name || !country || !zhTitle || !zhContent) {
+    showAdminMessage(t('admin.reviewRequired'))
+    return null
+  }
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+    showAdminMessage(t('admin.reviewRatingInvalid'))
+    return null
+  }
+  if (!publishStatuses.includes(reviewForm.status)) {
+    showAdminMessage(t('admin.reviewStatusInvalid'))
+    return null
+  }
+  if (productSlug && !validSlug(productSlug)) {
+    showAdminMessage(t('admin.slugInvalid'))
+    return null
+  }
+  if (images.length > 24) {
+    showAdminMessage(t('admin.reviewImagesTooMany'))
+    return null
+  }
+  if (images.some((image) => !validSiteImageReference(image))
+    || (avatarUrl && !validSiteImageReference(avatarUrl))
+    || (videoUrl && !validHttpUrl(videoUrl))) {
+    showAdminMessage(t('admin.reviewMediaInvalid'))
+    return null
+  }
+  const existing = (site.value.reviews || []).find((review: any) => review.id === reviewForm.id)
+  const translations: Record<AdminLang, ReviewTranslationFields> = {
+    zh: { title: zhTitle, content: zhContent },
+    en: {
+      title: reviewI18n.en.title.trim() || zhTitle,
+      content: reviewI18n.en.content.trim() || zhContent,
+    },
+    ko: {
+      title: reviewI18n.ko.title.trim() || zhTitle,
+      content: reviewI18n.ko.content.trim() || zhContent,
+    },
+  }
+  return {
+    id: reviewForm.id || existing?.id || crypto.randomUUID(),
+    name,
+    country,
+    rating,
+    status: reviewForm.status,
+    title: zhTitle,
+    content: zhContent,
+    product_slug: productSlug,
+    avatar_url: avatarUrl,
+    images,
+    pet_image: images[0] || '',
+    work_image: images[1] || '',
+    video_url: videoUrl,
+    translations: {
+      ...(existing?.translations || {}),
+      zh: { ...(existing?.translations?.zh || {}), ...translations.zh },
+      en: { ...(existing?.translations?.en || {}), ...translations.en },
+      ko: { ...(existing?.translations?.ko || {}), ...translations.ko },
+    },
+  }
+}
+
+async function saveReview() {
+  if (savingAction.value) return
+  const payload = reviewPayloadFromForm()
+  if (!payload) return
+  const reviews = Array.isArray(site.value.reviews) ? [...site.value.reviews] : []
+  const index = reviews.findIndex((review: any) => review.id === payload.id)
+  if (reviews.some((review: any, itemIndex: number) => itemIndex !== index
+    && String(review.name || '').trim().toLowerCase() === payload.name.toLowerCase()
+    && reviewField(review, 'title', 'zh').trim().toLowerCase() === payload.title.toLowerCase())) {
+    showAdminMessage(t('admin.reviewsDuplicate'))
+    return
+  }
+  const nextReviews = index >= 0
+    ? reviews.map((review: any, itemIndex: number) => itemIndex === index ? payload : review)
+    : [payload, ...reviews]
+  await runAdminAction('review-form', async () => {
+    const savedSite = await api<SiteSettings>('/admin/site', {
+      method: 'PUT',
+      body: JSON.stringify({ reviews: nextReviews }),
+    })
+    site.value = savedSite
+    syncSiteForms(savedSite)
+    discardReviewFormChanges()
+    showAdminMessage(t('admin.reviewSaved'))
+  })
+}
+
+function deleteReview(review: any) {
+  deleteReviewTarget.value = review
+}
+
+function closeDeleteReviewModal() {
+  if (savingAction.value.startsWith('review-delete-')) return
+  deleteReviewTarget.value = null
+}
+
+async function confirmDeleteReview() {
+  const review = deleteReviewTarget.value
+  if (!review) return
+  const reviews = Array.isArray(site.value.reviews) ? site.value.reviews : []
+  const nextReviews = reviews.filter((item: any) => item.id !== review.id)
+  if (!nextReviews.length) {
+    showAdminMessage(t('admin.reviewsRequired'))
+    return
+  }
+  await runAdminAction(`review-delete-${review.id}`, async () => {
+    const savedSite = await api<SiteSettings>('/admin/site', {
+      method: 'PUT',
+      body: JSON.stringify({ reviews: nextReviews }),
+    })
+    deleteReviewTarget.value = null
+    site.value = savedSite
+    syncSiteForms(savedSite)
+    showAdminMessage(t('admin.reviewDeleted'))
+  })
+}
+
+function resetReviewFilters() {
+  reviewSearch.value = ''
 }
 
 function resetBlogFilters() {
@@ -1560,7 +2206,12 @@ async function restoreSiteConfig(event: Event) {
       showAdminMessage(t('admin.restoreDone'))
     } catch (e: any) {
       const text = String(e?.message || '')
-      showAdminMessage(['valid Talk URL required', 'valid LINE URL required'].includes(text) ? adminErrorMessage(e) : t('admin.restoreInvalid'))
+      showAdminMessage([
+        'KakaoTalk contact required',
+        'WhatsApp contact required',
+        'valid KakaoTalk URL required',
+        'valid WhatsApp URL required',
+      ].includes(text) ? adminErrorMessage(e) : t('admin.restoreInvalid'))
     }
   })
 }
@@ -1757,8 +2408,18 @@ function readTranslation(item: any, lang: 'zh' | 'en' | 'ko', field: string) {
   return item?.translations?.[lang]?.[field] ?? (lang === 'zh' ? item?.[field] : '') ?? ''
 }
 
+function mergeTranslationFields(existing: any, lang: AdminLang, values: Record<string, string>) {
+  return {
+    ...(existing?.translations?.[lang] || {}),
+    ...Object.fromEntries(Object.entries(values).map(([field, value]) => [field, String(value || '').trim()])),
+  }
+}
+
 function optionRows(product: any, lang: 'zh' | 'en' | 'ko') {
-  return (product?.options || []).map((option: any) => `${readTranslation(option, lang, 'name') || option.name || ''},${option.price_cents || 0}`).join('\n')
+  return (product?.options || []).map((option: any) => {
+    const name = readTranslation(option, lang, 'name') || (lang === 'zh' ? option.name || '' : '')
+    return name ? `${name},${option.price_cents || 0}` : ''
+  }).join('\n')
 }
 
 function parseOptions(text: string, existing: any[] = []) {
@@ -1772,6 +2433,10 @@ function parseOptions(text: string, existing: any[] = []) {
       translations: existing[index]?.translations || {},
     }
   }).filter(option => option.name)
+}
+
+function optionNameRows(text: string) {
+  return String(text || '').split(/\r?\n/).map((row) => row.replace('，', ',').split(',')[0]?.trim() || '')
 }
 
 function validSlug(value: string) {
@@ -1823,13 +2488,18 @@ function markPhotoMissing(order: any, url: string, index: number) {
 }
 
 function resetSitePolicyForm() {
-  policyI18n.zh.care = readTranslation(site.value.policies || {}, 'zh', 'care')
-  policyI18n.zh.shipping = readTranslation(site.value.policies || {}, 'zh', 'shipping')
-  policyI18n.zh.refund = readTranslation(site.value.policies || {}, 'zh', 'refund')
+  for (const lang of adminLangs) {
+    policyI18n[lang].care = readTranslation(site.value.policies || {}, lang, 'care')
+    policyI18n[lang].shipping = readTranslation(site.value.policies || {}, lang, 'shipping')
+    policyI18n[lang].refund = readTranslation(site.value.policies || {}, lang, 'refund')
+  }
   siteForm.care = policyI18n.zh.care
   siteForm.shipping = policyI18n.zh.shipping
   siteForm.refund = policyI18n.zh.refund
-  siteForm.faq_text = (site.value.faq || []).map((faq: any) => `${readTranslation(faq, 'zh', 'question') || faq.question || ''}|${readTranslation(faq, 'zh', 'answer') || faq.answer || ''}`).join('\n')
+  for (const lang of adminLangs) {
+    faqI18n[lang] = (site.value.faq || []).map((faq: any) => `${readTranslation(faq, lang, 'question') || (lang === 'zh' ? faq.question : '') || ''}|${readTranslation(faq, lang, 'answer') || (lang === 'zh' ? faq.answer : '') || ''}`).join('\n')
+  }
+  siteForm.faq_text = faqI18n.zh
   siteForm.reviews_text = (site.value.reviews || []).map((review: any) => {
     const title = readTranslation(review, 'zh', 'title') || review.title || ''
     const content = readTranslation(review, 'zh', 'content') || review.content || ''
@@ -1846,7 +2516,8 @@ function resetSitePolicyForm() {
 function stableSiteFormState() {
   return JSON.stringify({
     site: siteForm,
-    policies: policyI18n.zh,
+    policies: policyI18n,
+    faq: faqI18n,
     payment: paymentForm,
     contact: contactForm,
   })
@@ -1879,12 +2550,14 @@ function syncSiteForms(siteData: SiteSettings) {
   })
   resetSitePolicyForm()
   Object.assign(contactForm, {
-    talk_enabled: siteData.contact?.talk_enabled ?? true,
-    talk_label: siteData.contact?.talk_label || 'TALK',
-    talk_url: siteData.contact?.talk_url || '',
-    line_enabled: siteData.contact?.line_enabled ?? true,
-    line_label: siteData.contact?.line_label || 'LINE',
-    line_url: siteData.contact?.line_url || ''
+    kakao_enabled: siteData.contact?.kakao_enabled ?? true,
+    kakao_label: siteData.contact?.kakao_label || 'KakaoTalk',
+    kakao_id: siteData.contact?.kakao_id || '',
+    kakao_url: siteData.contact?.kakao_url || '',
+    whatsapp_enabled: siteData.contact?.whatsapp_enabled ?? true,
+    whatsapp_label: siteData.contact?.whatsapp_label || 'WhatsApp',
+    whatsapp_id: siteData.contact?.whatsapp_id || '',
+    whatsapp_url: siteData.contact?.whatsapp_url || ''
   })
   markSiteFormClean()
 }
@@ -2072,8 +2745,6 @@ async function saveCategory() {
   const translations = {
     ...(existing?.translations || {}),
     zh: { ...(existing?.translations?.zh || {}), ...categoryI18n.zh },
-    en: { ...(existing?.translations?.en || {}), ...categoryI18n.zh },
-    ko: { ...(existing?.translations?.ko || {}), ...categoryI18n.zh },
   }
   const body = JSON.stringify({
     ...categoryForm,
@@ -2115,14 +2786,16 @@ async function confirmDeleteCategory() {
 
 function resetProductForm() {
   Object.assign(productForm, { id: '', category_id: categories.value[0]?.id || '', slug: '', title: '', subtitle: '', description: '', base_price_cents: 0, currency: 'CNY', deposit_percent: 50, image_url: '', images_text: '', alt_text: '', seo_title: '', seo_description: '', use_cases_text: '', tags: '', options_text: t('admin.defaultOptionsText'), status: 'published' })
-  Object.assign(productI18n.zh, { title: '', subtitle: '', description: '', alt_text: '', seo_title: '', seo_description: '', options_text: '' })
+  for (const lang of adminLangs) {
+    Object.assign(productI18n[lang], { title: '', subtitle: '', description: '', alt_text: '', seo_title: '', seo_description: '', options_text: '' })
+  }
   productI18n.zh.options_text = t('admin.defaultOptionsText')
 }
 
 function stableProductFormState() {
   return JSON.stringify({
     form: productForm,
-    zh: productI18n.zh,
+    translations: productI18n,
   })
 }
 
@@ -2136,10 +2809,6 @@ function openProductModal(product?: Product) {
 
 function closeProductModal() {
   if (savingAction.value === 'product') return
-  if (stableProductFormState() !== productFormSnapshot.value) {
-    productUnsavedConfirmOpen.value = true
-    return
-  }
   discardProductFormChanges()
 }
 
@@ -2168,13 +2837,15 @@ function editProduct(product: Product) {
     tags: product.tags?.join(', ') || '',
     options_text: optionRows(product, 'zh') || ''
   })
-  productI18n.zh.title = readTranslation(product, 'zh', 'title')
-  productI18n.zh.subtitle = readTranslation(product, 'zh', 'subtitle')
-  productI18n.zh.description = readTranslation(product, 'zh', 'description')
-  productI18n.zh.alt_text = readTranslation(product, 'zh', 'alt_text')
-  productI18n.zh.seo_title = readTranslation(product, 'zh', 'seo_title')
-  productI18n.zh.seo_description = readTranslation(product, 'zh', 'seo_description')
-  productI18n.zh.options_text = optionRows(product, 'zh')
+  for (const lang of adminLangs) {
+    productI18n[lang].title = readTranslation(product, lang, 'title')
+    productI18n[lang].subtitle = readTranslation(product, lang, 'subtitle')
+    productI18n[lang].description = readTranslation(product, lang, 'description')
+    productI18n[lang].alt_text = readTranslation(product, lang, 'alt_text')
+    productI18n[lang].seo_title = readTranslation(product, lang, 'seo_title')
+    productI18n[lang].seo_description = readTranslation(product, lang, 'seo_description')
+    productI18n[lang].options_text = optionRows(product, lang)
+  }
 }
 
 async function saveProduct() {
@@ -2223,15 +2894,16 @@ async function saveProduct() {
     showAdminMessage(t('admin.optionsInvalid'))
     return
   }
+  const optionNamesByLang = Object.fromEntries(adminLangs.map((lang) => [lang, optionNameRows(productI18n[lang].options_text)])) as Record<AdminLang, string[]>
   const options = zhOptions.map((option, index) => ({
     ...option,
     name: option.name,
-    translations: {
-      ...(existing?.options?.[index]?.translations || {}),
-      zh: { ...(existing?.options?.[index]?.translations?.zh || {}), name: option.name },
-      en: { ...(existing?.options?.[index]?.translations?.en || {}), name: option.name },
-      ko: { ...(existing?.options?.[index]?.translations?.ko || {}), name: option.name },
-    }
+    translations: adminLangs.reduce((translations, lang) => {
+      const translatedName = optionNamesByLang[lang][index]
+      if (!translatedName) return translations
+      translations[lang] = { ...(translations[lang] || {}), name: translatedName }
+      return translations
+    }, { ...(existing?.options?.[index]?.translations || {}) } as Record<AdminLang, Record<string, string>>),
   }))
   const primaryImage = String(productForm.image_url || '').trim()
   const images = [...new Set(primaryImage
@@ -2249,6 +2921,28 @@ async function saveProduct() {
     showAdminMessage(t('admin.productPublishedSeoDescriptionRequired'))
     return
   }
+  const productTranslations = { ...(existing?.translations || {}) } as Record<AdminLang, Record<string, string>>
+  for (const lang of adminLangs) {
+    const values = {
+      title: productI18n[lang].title,
+      subtitle: productI18n[lang].subtitle,
+      description: productI18n[lang].description,
+      alt_text: productI18n[lang].alt_text,
+      seo_title: productI18n[lang].seo_title,
+      seo_description: productI18n[lang].seo_description,
+    }
+    const enteredValues = Object.fromEntries(
+      Object.entries(values)
+        .map(([field, value]) => [field, String(value || '').trim()])
+        .filter(([, value]) => Boolean(value))
+    ) as Record<string, string>
+    if (lang === 'zh' || Object.keys(enteredValues).length) {
+      productTranslations[lang] = {
+        ...(existing?.translations?.[lang] || {}),
+        ...enteredValues,
+      }
+    }
+  }
   const payload = {
     ...productForm,
     title: productI18n.zh.title,
@@ -2264,10 +2958,7 @@ async function saveProduct() {
     use_cases: productForm.use_cases_text.split(',').map(v => v.trim()).filter(Boolean),
     options,
     translations: {
-      ...(existing?.translations || {}),
-      zh: { ...(existing?.translations?.zh || {}), title: productI18n.zh.title, subtitle: productI18n.zh.subtitle, description: productI18n.zh.description, alt_text: productI18n.zh.alt_text, seo_title: productI18n.zh.seo_title, seo_description: productI18n.zh.seo_description },
-      en: { ...(existing?.translations?.en || {}), title: productI18n.zh.title, subtitle: productI18n.zh.subtitle, description: productI18n.zh.description, alt_text: productI18n.zh.alt_text, seo_title: productI18n.zh.seo_title, seo_description: productI18n.zh.seo_description },
-      ko: { ...(existing?.translations?.ko || {}), title: productI18n.zh.title, subtitle: productI18n.zh.subtitle, description: productI18n.zh.description, alt_text: productI18n.zh.alt_text, seo_title: productI18n.zh.seo_title, seo_description: productI18n.zh.seo_description },
+      ...productTranslations,
     },
   }
   const body = JSON.stringify(payload)
@@ -2458,46 +3149,59 @@ async function saveSite() {
     showAdminMessage(t('admin.paypalWebhookIdInvalid'))
     return
   }
-  if (contactForm.talk_enabled && !validHttpUrl(contactForm.talk_url)) {
-    showAdminMessage(t('admin.talkUrlInvalid'))
+  if (contactForm.kakao_enabled && !contactForm.kakao_id.trim() && !contactForm.kakao_url.trim()) {
+    showAdminMessage(t('admin.kakaoContactRequired'))
     return
   }
-  if (contactForm.line_enabled && !validHttpUrl(contactForm.line_url)) {
-    showAdminMessage(t('admin.lineUrlInvalid'))
+  if (contactForm.whatsapp_enabled && !contactForm.whatsapp_id.trim() && !contactForm.whatsapp_url.trim()) {
+    showAdminMessage(t('admin.whatsappContactRequired'))
     return
   }
-  const policyTranslations = {
-    ...(site.value.policies?.translations || {}),
-    zh: { ...(site.value.policies?.translations?.zh || {}), ...policyI18n.zh },
-    en: { ...(site.value.policies?.translations?.en || {}), ...policyI18n.zh },
-    ko: { ...(site.value.policies?.translations?.ko || {}), ...policyI18n.zh },
+  if (contactForm.kakao_url && !validHttpUrl(contactForm.kakao_url)) {
+    showAdminMessage(t('admin.kakaoUrlInvalid'))
+    return
   }
-  const faqRows = String(siteForm.faq_text || '').split('\n')
-  const invalidFaqIndex = faqRows.findIndex((row) => {
+  if (contactForm.whatsapp_url && !validHttpUrl(contactForm.whatsapp_url)) {
+    showAdminMessage(t('admin.whatsappUrlInvalid'))
+    return
+  }
+  const policyTranslations = { ...(site.value.policies?.translations || {}) } as Record<AdminLang, Record<string, string>>
+  for (const lang of adminLangs) {
+    policyTranslations[lang] = mergeTranslationFields(site.value.policies || {}, lang, policyI18n[lang])
+  }
+  const faqRowsByLang = Object.fromEntries(adminLangs.map((lang) => [lang, String(faqI18n[lang] || '').split(/\r?\n/)])) as Record<AdminLang, string[]>
+  const invalidFaqEntry = adminLangs.flatMap((lang) => faqRowsByLang[lang].map((row, index) => ({ lang, row, index }))).find(({ row }) => {
     if (!row.trim()) return false
     const [question = '', ...answerParts] = row.split('|')
     return !question.trim() || !answerParts.join('|').trim()
   })
-  if (invalidFaqIndex >= 0) {
-    showAdminMessage(t('admin.faqRowInvalid', { row: invalidFaqIndex + 1 }))
+  if (invalidFaqEntry) {
+    showAdminMessage(t('admin.faqRowInvalid', { row: invalidFaqEntry.index + 1 }))
     return
   }
+  const faqRows = faqRowsByLang.zh
   const faq = faqRows.map((row, index) => {
     const [question = '', ...answerParts] = row.split('|')
     const answer = answerParts.join('|')
     const trimmedQuestion = question.trim()
     const trimmedAnswer = answer.trim()
     const existing = site.value.faq?.[index] || {}
+    const translations = { ...(existing.translations || {}) } as Record<AdminLang, Record<string, string>>
+    for (const lang of adminLangs) {
+      const translatedRow = faqRowsByLang[lang][index] || ''
+      if (!translatedRow.trim()) continue
+      const [translatedQuestion = '', ...translatedAnswerParts] = translatedRow.split('|')
+      translations[lang] = mergeTranslationFields(
+        { translations },
+        lang,
+        { question: translatedQuestion, answer: translatedAnswerParts.join('|') },
+      )
+    }
     return {
       id: existing.id || crypto.randomUUID(),
       question: trimmedQuestion,
       answer: trimmedAnswer,
-      translations: {
-        ...(existing.translations || {}),
-        zh: { ...(existing.translations?.zh || {}), question: trimmedQuestion, answer: trimmedAnswer },
-        en: { ...(existing.translations?.en || {}), question: trimmedQuestion, answer: trimmedAnswer },
-        ko: { ...(existing.translations?.ko || {}), question: trimmedQuestion, answer: trimmedAnswer },
-      }
+      translations,
     }
   }).filter((faq) => faq.question && faq.answer)
   if (!faq.length) {
@@ -2529,23 +3233,33 @@ async function saveSite() {
     const trimmedContent = content.trim()
     const rating = Math.min(5, Math.max(1, Number.parseInt(ratingText.trim(), 10) || 5))
     const existing = site.value.reviews?.[index] || {}
+    const existingImages = reviewMediaUrls(existing)
     return {
+      ...(existing.source === 'customer' ? {
+        source: existing.source,
+        verified: Boolean(existing.verified),
+        order_id: existing.order_id || '',
+        user_email: existing.user_email || '',
+        created_at: existing.created_at || '',
+      } : {}),
       id: existing.id || crypto.randomUUID(),
       name: trimmedName,
       country: trimmedCountry,
       rating,
+      status: existing.status || 'published',
       title: trimmedTitle,
       content: trimmedContent,
       product_slug: productSlug.trim() || existing.product_slug || '',
-      avatar_url: avatarUrl.trim(),
-      pet_image: petImage.trim(),
-      work_image: workImage.trim(),
+      avatar_url: avatarUrl.trim() || existing.avatar_url || '',
+      images: existingImages.length
+        ? existingImages
+        : [petImage.trim(), workImage.trim()].filter(Boolean),
+      pet_image: existingImages[0] || petImage.trim(),
+      work_image: existingImages[1] || workImage.trim(),
       video_url: videoUrl.trim(),
       translations: {
         ...(existing.translations || {}),
         zh: { ...(existing.translations?.zh || {}), title: trimmedTitle, content: trimmedContent },
-        en: { ...(existing.translations?.en || {}), title: trimmedTitle, content: trimmedContent },
-        ko: { ...(existing.translations?.ko || {}), title: trimmedTitle, content: trimmedContent },
       }
     }
   }).filter((review) => review.name && review.country && review.title && review.content)
@@ -2609,8 +3323,6 @@ async function saveSite() {
       translations: {
         ...(existing.translations || {}),
         zh: { ...(existing.translations?.zh || {}), title: trimmedTitle, excerpt: trimmedExcerpt, content: trimmedContent },
-        en: { ...(existing.translations?.en || {}), title: trimmedTitle, excerpt: trimmedExcerpt, content: trimmedContent },
-        ko: { ...(existing.translations?.ko || {}), title: trimmedTitle, excerpt: trimmedExcerpt, content: trimmedContent },
       }
     }
   }).filter((post) => post.slug && post.date && post.title && post.excerpt && post.content)
@@ -2654,11 +3366,93 @@ async function saveSite() {
   })
 }
 
+async function testPaypalConnection() {
+  await runAdminAction('paypal-check', async () => {
+    const paypal = {
+      enabled: paymentForm.paypal_enabled,
+      mode: paymentForm.paypal_mode,
+      client_id: paymentForm.paypal_client_id.trim(),
+      ...(paymentForm.paypal_secret.trim() ? { secret: paymentForm.paypal_secret.trim() } : {}),
+      ...(paymentForm.paypal_webhook_id.trim() ? { webhook_id: paymentForm.paypal_webhook_id.trim() } : {}),
+      currency: paymentForm.currency.trim().toUpperCase(),
+    }
+    const result = await api<{ mode: string; currency: string }>('/admin/paypal/check', {
+      method: 'POST',
+      body: JSON.stringify({ paypal }),
+    })
+    showAdminMessage(t('admin.paypalConnectionSuccess', { mode: result.mode, currency: result.currency }))
+  })
+}
+
+function paypalFormPayload() {
+  return {
+    enabled: paymentForm.paypal_enabled,
+    mode: paymentForm.paypal_mode,
+    client_id: paymentForm.paypal_client_id.trim(),
+    ...(paymentForm.paypal_secret.trim() ? { secret: paymentForm.paypal_secret.trim() } : {}),
+    ...(paymentForm.paypal_webhook_id.trim() ? { webhook_id: paymentForm.paypal_webhook_id.trim() } : {}),
+    currency: paymentForm.currency.trim().toUpperCase(),
+  }
+}
+
+function paypalTestFailureMessage(error: any) {
+  const data = error?.data || {}
+  const lines = [
+    `${t('admin.paypalTestHttpStatus')}: ${data.paypal_http_status || error?.status || '-'}`,
+    `${t('admin.paypalTestPath')}: ${data.paypal_path || '-'}`,
+  ]
+  if (data.paypal_method) lines.push(`${t('admin.paypalTestMethod')}: ${data.paypal_method}`)
+  if (data.paypal_name) lines.push(`${t('admin.paypalTestName')}: ${data.paypal_name}`)
+  if (data.paypal_error) lines.push(`${t('admin.paypalTestError')}: ${data.paypal_error}`)
+  if (data.paypal_error_description) lines.push(`${t('admin.paypalTestDescription')}: ${data.paypal_error_description}`)
+  if (data.paypal_message) lines.push(`${t('admin.paypalTestMessage')}: ${data.paypal_message}`)
+  if (data.paypal_debug_id) lines.push(`${t('admin.paypalTestDebugId')}: ${data.paypal_debug_id}`)
+  if (Array.isArray(data.paypal_issues) && data.paypal_issues.length) {
+    lines.push(`${t('admin.paypalTestIssues')}:`)
+    data.paypal_issues.forEach((item: any) => {
+      lines.push(`- ${item.issue || '-'}: ${item.description || '-'}`)
+    })
+  }
+  if (data.paypal_response && typeof data.paypal_response === 'object' && Object.keys(data.paypal_response).length) {
+    lines.push(`${t('admin.paypalTestResponse')}: ${JSON.stringify(data.paypal_response)}`)
+  }
+  if (lines.length === 2 && error?.message) lines.push(`${t('admin.paypalTestMessage')}: ${error.message}`)
+  return lines.join('\n')
+}
+
+async function testPaypalOrder() {
+  if (savingAction.value) return
+  savingAction.value = 'paypal-order-test'
+  paypalTestResult.value = null
+  paypalTestError.value = ''
+  try {
+    const result = await api<any>('/admin/paypal/test-order', {
+      method: 'POST',
+      body: JSON.stringify({ paypal: paypalFormPayload() }),
+    })
+    paypalTestResult.value = result
+    showAdminMessage(t('admin.paypalOrderTestSuccess', { id: result.paypal_order_id, mode: result.mode }))
+  } catch (error: any) {
+    paypalTestError.value = paypalTestFailureMessage(error)
+    showAdminMessage(t('admin.paypalOrderTestFailed'))
+  } finally {
+    savingAction.value = ''
+  }
+}
+
 onMounted(loadAll)
 watch(modalOpen, (open) => {
   document.body.classList.toggle('modal-open', open)
 }, { immediate: true })
+watch(orderLightbox, (lightbox) => {
+  if (lightbox) window.addEventListener('keydown', handleOrderLightboxKeydown)
+  else window.removeEventListener('keydown', handleOrderLightboxKeydown)
+})
+watch(tab, (nextTab) => {
+  if (nextTab !== 'orders') closeOrderLightbox()
+})
 onUnmounted(() => {
+  window.removeEventListener('keydown', handleOrderLightboxKeydown)
   document.body.classList.remove('modal-open')
 })
 watch([userSearch, userStatusFilter], () => { userPage.value = 1 })
@@ -2709,7 +3503,9 @@ watch([filteredBlogs, blogPageCount], () => { blogPage.value = clampPage(blogPag
       <button :class="{active: tab === 'categories'}" @click="tab = 'categories'">{{ t('admin.categories') }}</button>
       <button :class="{active: tab === 'products'}" @click="tab = 'products'">{{ t('admin.productsManage') }}</button>
       <button :class="{active: tab === 'orders'}" @click="tab = 'orders'">{{ t('admin.ordersManage') }}</button>
+      <button :class="{active: tab === 'reviews'}" @click="tab = 'reviews'">{{ t('admin.reviewsManage') }}</button>
       <button :class="{active: tab === 'blog'}" @click="tab = 'blog'">{{ t('admin.blogManage') }}</button>
+      <button :class="{active: tab === 'paypal'}" @click="tab = 'paypal'">{{ t('admin.paypalPage') }}</button>
       <button :class="{active: tab === 'site'}" @click="tab = 'site'">{{ t('admin.siteConfig') }}</button>
       <button :class="{active: tab === 'audit'}" @click="tab = 'audit'">{{ t('admin.auditLogs') }}</button>
       <button :class="{active: tab === 'readiness'}" @click="tab = 'readiness'">{{ t('admin.readinessTitle') }}</button>
@@ -3058,47 +3854,76 @@ watch([filteredBlogs, blogPageCount], () => { blogPage.value = clampPage(blogPag
         <div class="photo-preview large">
           <p v-if="!selectedOrder.photo_urls?.length" class="empty-photo-state">{{ t('admin.noOrderPhotos') }}</p>
           <figure v-for="(url, index) in selectedOrder.photo_urls" :key="`${url}-${index}`" class="admin-photo-tile">
-            <img
+            <button
               v-if="!brokenPhotoKeys.has(photoKey(selectedOrder, url, index))"
-              :src="url"
-              alt="pet"
-              @error="markPhotoMissing(selectedOrder, url, index)"
-            />
+              class="admin-photo-button"
+              type="button"
+              :aria-label="t('detail.zoomImage')"
+              @click="openOrderImage(selectedOrder, index)"
+            >
+              <img :src="url" alt="pet" @error="markPhotoMissing(selectedOrder, url, index)" />
+              <span class="admin-photo-zoom-mark" aria-hidden="true"><ZoomIn :size="14" /></span>
+            </button>
             <figcaption v-else class="missing-photo">{{ t('admin.photoMissing') }}</figcaption>
           </figure>
         </div>
         </section>
       </div>
-      <div class="admin-panel-head">
-        <h2>{{ t('admin.ordersManage') }}</h2>
-        <div class="admin-filters order-filters">
-          <input v-model="orderSearch" :placeholder="t('admin.searchOrders')" />
-          <select v-model="orderStatusFilter">
-            <option value="">{{ t('admin.allOrderStatuses') }}</option>
-            <option v-for="s in orderStatuses" :key="s" :value="s">{{ statusText(s) }}</option>
-          </select>
-          <select v-model="paymentStatusFilter">
-            <option value="">{{ t('admin.allPaymentStatuses') }}</option>
-            <option v-for="s in paymentStatuses" :key="s" :value="s">{{ statusText(s) }}</option>
-          </select>
-          <select v-model="orderFlagFilter">
-            <option value="">{{ t('admin.allFlagStatuses') }}</option>
-            <option value="flagged">{{ t('admin.flaggedOnly') }}</option>
-            <option value="normal">{{ t('admin.normalOnly') }}</option>
-          </select>
-          <select v-model="orderSort" :aria-label="t('admin.orderSort')">
-            <option value="latest">{{ t('admin.sortLatest') }}</option>
-            <option value="oldest">{{ t('admin.sortOldest') }}</option>
-            <option value="action_required">{{ t('admin.sortActionRequired') }}</option>
-            <option value="amount_desc">{{ t('admin.sortAmountDesc') }}</option>
-            <option value="amount_asc">{{ t('admin.sortAmountAsc') }}</option>
-            <option value="flagged_first">{{ t('admin.sortFlaggedFirst') }}</option>
-          </select>
-          <button class="button ghost" type="button" @click="exportOrdersCsv">{{ t('admin.exportOrders') }}</button>
-          <button class="button ghost" type="button" @click="copyFilteredOrderContacts">{{ t('admin.copyFilteredContacts') }}</button>
-          <button class="button ghost" type="button" @click="copyFilteredOrderHandoff">{{ t('admin.copyHandoffList') }}</button>
-          <button class="button ghost" type="button" @click="resetOrderFilters">{{ t('admin.resetOrderFilters') }}</button>
+      <div
+        v-if="orderLightbox && orderLightboxImage"
+        class="image-lightbox admin-order-lightbox"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="t('detail.zoomImage')"
+        @click.self="closeOrderLightbox"
+      >
+        <button class="icon-button lightbox-close" type="button" :aria-label="t('detail.closeImage')" @click="closeOrderLightbox">
+          <X :size="24" />
+        </button>
+        <button v-if="orderLightboxImages.length > 1" class="gallery-nav previous" type="button" :aria-label="t('detail.previousImage')" @click="moveOrderImage(-1)">
+          <ChevronLeft :size="28" />
+        </button>
+        <figure>
+          <img :src="orderLightboxImage" alt="pet" />
+          <figcaption>{{ orderLightboxIndex + 1 }} / {{ orderLightboxImages.length }}</figcaption>
+        </figure>
+        <button v-if="orderLightboxImages.length > 1" class="gallery-nav next" type="button" :aria-label="t('detail.nextImage')" @click="moveOrderImage(1)">
+          <ChevronRight :size="28" />
+        </button>
+      </div>
+      <div class="admin-panel-head order-panel-head">
+        <div>
+          <h2>{{ t('admin.ordersManage') }}</h2>
+          <p class="muted order-panel-summary">{{ orderPageSummary }}</p>
         </div>
+      </div>
+      <div class="admin-filters order-filters">
+        <input v-model="orderSearch" :placeholder="t('admin.searchOrders')" />
+        <select v-model="orderStatusFilter">
+          <option value="">{{ t('admin.allOrderStatuses') }}</option>
+          <option v-for="s in orderStatuses" :key="s" :value="s">{{ statusText(s) }}</option>
+        </select>
+        <select v-model="paymentStatusFilter">
+          <option value="">{{ t('admin.allPaymentStatuses') }}</option>
+          <option v-for="s in paymentStatuses" :key="s" :value="s">{{ statusText(s) }}</option>
+        </select>
+        <select v-model="orderFlagFilter">
+          <option value="">{{ t('admin.allFlagStatuses') }}</option>
+          <option value="flagged">{{ t('admin.flaggedOnly') }}</option>
+          <option value="normal">{{ t('admin.normalOnly') }}</option>
+        </select>
+        <select v-model="orderSort" :aria-label="t('admin.orderSort')">
+          <option value="latest">{{ t('admin.sortLatest') }}</option>
+          <option value="oldest">{{ t('admin.sortOldest') }}</option>
+          <option value="action_required">{{ t('admin.sortActionRequired') }}</option>
+          <option value="amount_desc">{{ t('admin.sortAmountDesc') }}</option>
+          <option value="amount_asc">{{ t('admin.sortAmountAsc') }}</option>
+          <option value="flagged_first">{{ t('admin.sortFlaggedFirst') }}</option>
+        </select>
+        <button class="button ghost" type="button" @click="exportOrdersCsv">{{ t('admin.exportOrders') }}</button>
+        <button class="button ghost" type="button" @click="copyFilteredOrderContacts">{{ t('admin.copyFilteredContacts') }}</button>
+        <button class="button ghost" type="button" @click="copyFilteredOrderHandoff">{{ t('admin.copyHandoffList') }}</button>
+        <button class="button ghost" type="button" @click="resetOrderFilters">{{ t('admin.resetOrderFilters') }}</button>
       </div>
       <div v-if="contactCopyText" class="copy-output">
         <label>{{ orderCopyOutputTitle || t('admin.copyContactsOutput') }}
@@ -3127,6 +3952,21 @@ watch([filteredBlogs, blogPageCount], () => { blogPage.value = clampPage(blogPag
             <p><span>{{ t('admin.petInfo') }}</span>{{ order.pet_name }} {{ order.pet_type }}</p>
             <p><span>{{ t('admin.photos') }}</span>{{ order.photo_urls?.length || 0 }}</p>
           </div>
+          <div v-if="order.photo_urls?.length" class="mobile-order-photos">
+            <figure v-for="(url, index) in order.photo_urls" :key="`${url}-${index}`" class="admin-photo-tile">
+              <button
+                v-if="!brokenPhotoKeys.has(photoKey(order, url, index))"
+                class="admin-photo-button"
+                type="button"
+                :aria-label="t('detail.zoomImage')"
+                @click="openOrderImage(order, index)"
+              >
+                <img :src="url" alt="pet" @error="markPhotoMissing(order, url, index)" />
+                <span class="admin-photo-zoom-mark" aria-hidden="true"><ZoomIn :size="14" /></span>
+              </button>
+              <figcaption v-else class="missing-photo">{{ t('admin.photoMissing') }}</figcaption>
+            </figure>
+          </div>
           <div class="mobile-order-controls">
             <label>{{ t('admin.status') }}<select :value="order.order_status" :disabled="!!savingAction" @change="onOrderSelectChange(order, 'status', $event)"><option v-for="s in orderStatuses" :key="s" :value="s">{{ statusText(s) }}</option></select></label>
             <label>{{ t('admin.payment') }}<select :value="order.payment_status" :disabled="!!savingAction" @change="onOrderSelectChange(order, 'payment', $event)"><option v-for="s in paymentStatuses" :key="s" :value="s">{{ statusText(s) }}</option></select></label>
@@ -3151,6 +3991,16 @@ watch([filteredBlogs, blogPageCount], () => { blogPage.value = clampPage(blogPag
         </article>
       </div>
       <table class="desktop-order-table">
+        <colgroup>
+          <col class="order-col-order" />
+          <col class="order-col-customer" />
+          <col class="order-col-product" />
+          <col class="order-col-photos" />
+          <col class="order-col-amount" />
+          <col class="order-col-status" />
+          <col class="order-col-payment" />
+          <col class="order-col-note" />
+        </colgroup>
         <thead><tr><th>{{ t('admin.order') }}</th><th>{{ t('admin.customer') }}</th><th>{{ t('admin.products') }}</th><th>{{ t('admin.photos') }}</th><th>{{ t('admin.amount') }}</th><th>{{ t('admin.status') }}</th><th>{{ t('admin.payment') }}</th><th>{{ t('admin.note') }}</th></tr></thead>
         <tbody>
           <tr v-for="order in pagedOrders" :key="order.id">
@@ -3173,12 +4023,16 @@ watch([filteredBlogs, blogPageCount], () => { blogPage.value = clampPage(blogPag
               <div class="photo-preview">
                 <p v-if="!order.photo_urls?.length" class="empty-photo-state">{{ t('admin.noOrderPhotos') }}</p>
                 <figure v-for="(url, index) in order.photo_urls" :key="`${url}-${index}`" class="admin-photo-tile">
-                  <img
+                  <button
                     v-if="!brokenPhotoKeys.has(photoKey(order, url, index))"
-                    :src="url"
-                    alt="pet"
-                    @error="markPhotoMissing(order, url, index)"
-                  />
+                    class="admin-photo-button"
+                    type="button"
+                    :aria-label="t('detail.zoomImage')"
+                    @click="openOrderImage(order, index)"
+                  >
+                    <img :src="url" alt="pet" @error="markPhotoMissing(order, url, index)" />
+                    <span class="admin-photo-zoom-mark" aria-hidden="true"><ZoomIn :size="14" /></span>
+                  </button>
                   <figcaption v-else class="missing-photo">{{ t('admin.photoMissing') }}</figcaption>
                 </figure>
               </div>
@@ -3205,7 +4059,6 @@ watch([filteredBlogs, blogPageCount], () => { blogPage.value = clampPage(blogPag
           </tr>
         </tbody>
       </table>
-      <div v-if="filteredOrders.length" class="list-summary">{{ orderPageSummary }}</div>
       <div v-if="filteredOrders.length > pageSize" class="pager">
         <button class="button ghost" :disabled="orderPage <= 1" @click="prevPage('orders')">{{ t('common.prev') }}</button>
         <span>{{ orderPage }} / {{ orderPageCount }}</span>
@@ -3217,6 +4070,63 @@ watch([filteredBlogs, blogPageCount], () => { blogPage.value = clampPage(blogPag
         <div class="empty-actions">
           <button class="button ghost" type="button" @click="resetOrderFilters">{{ t('admin.resetOrderFilters') }}</button>
           <button class="button primary" type="button" @click="loadAll">{{ t('admin.refreshData') }}</button>
+        </div>
+      </div>
+    </section>
+
+    <section v-if="tab === 'reviews'" class="panel review-admin-panel">
+      <div class="admin-panel-head">
+        <div>
+          <h2>{{ t('admin.reviewsManage') }}</h2>
+          <p class="muted">{{ t('admin.reviewsManageHelp') }}</p>
+        </div>
+        <div class="admin-filters review-admin-filters">
+          <input v-model="reviewSearch" :placeholder="t('admin.searchReviews')" />
+          <button class="button ghost" type="button" @click="resetReviewFilters">{{ t('admin.resetReviewFilters') }}</button>
+          <button class="button primary" type="button" @click="openReviewModal()"><ImagePlus :size="16" />{{ t('admin.addReview') }}</button>
+        </div>
+      </div>
+      <div v-if="filteredReviews.length" class="review-admin-grid">
+        <article v-for="review in filteredReviews" :key="review.id" class="review-admin-card">
+          <div class="review-admin-card-media">
+            <img
+              v-for="(image, index) in reviewMediaUrls(review)"
+              :key="`${review.id}-image-${index}`"
+              :src="resolveContentImage(image)"
+              :alt="`${review.name} review image ${Number(index) + 1}`"
+              loading="lazy"
+              decoding="async"
+            />
+            <span v-if="!reviewMediaUrls(review).length">{{ t('admin.reviewNoImage') }}</span>
+          </div>
+          <div class="review-admin-body">
+            <div class="review-admin-meta">
+              <span>{{ statusText(review.status || 'published') }}</span>
+              <span>{{ t('admin.reviewTranslationCount', { count: reviewTranslationCount(review) }) }}</span>
+              <span>{{ t('admin.reviewImageCount', { count: reviewMediaUrls(review).length }) }}</span>
+            </div>
+            <div class="review-admin-identity">
+              <img v-if="review.avatar_url" class="review-admin-avatar" :src="resolveContentImage(review.avatar_url)" :alt="review.name" loading="lazy" decoding="async" />
+              <span>{{ review.name }} · {{ review.country }}</span>
+            </div>
+            <div class="rating" :aria-label="`${review.rating} stars`">★★★★★</div>
+            <h3>{{ reviewField(review, 'title', 'zh') }}</h3>
+            <p class="preserve-lines">{{ reviewField(review, 'content', 'zh') }}</p>
+            <div class="row-actions compact-actions">
+              <button class="button ghost" type="button" @click="openReviewModal(review)">{{ t('common.edit') }}</button>
+              <button class="button ghost danger" type="button" :disabled="!!savingAction" @click="deleteReview(review)">
+                <Trash2 :size="15" />{{ actionBusy(`review-delete-${review.id}`) ? t('common.loading') : t('common.delete') }}
+              </button>
+            </div>
+          </div>
+        </article>
+      </div>
+      <div v-if="!filteredReviews.length" class="empty-state admin-empty-state">
+        <h3>{{ t('admin.noReviews') }}</h3>
+        <p>{{ t('admin.noReviewsHelp') }}</p>
+        <div class="empty-actions">
+          <button class="button ghost" type="button" @click="resetReviewFilters">{{ t('admin.resetReviewFilters') }}</button>
+          <button class="button primary" type="button" @click="openReviewModal()"><ImagePlus :size="16" />{{ t('admin.addReview') }}</button>
         </div>
       </div>
     </section>
@@ -3277,6 +4187,95 @@ watch([filteredBlogs, blogPageCount], () => { blogPage.value = clampPage(blogPag
       </div>
     </section>
 
+    <section v-if="tab === 'paypal'" class="panel paypal-admin-page">
+      <div class="paypal-page-head">
+        <div>
+          <p class="eyebrow">{{ t('admin.paypalEyebrow') }}</p>
+          <h2>{{ t('admin.paypalPage') }}</h2>
+          <p class="muted paypal-page-lead">{{ t('admin.paypalPageDesc') }}</p>
+        </div>
+        <div class="paypal-logo-mark" aria-hidden="true">P</div>
+      </div>
+
+      <div class="paypal-help-banner">
+        <div>
+          <strong>{{ t('admin.paypalHelpBannerTitle') }}</strong>
+          <span>{{ t('admin.paypalHelpBannerDesc') }}</span>
+        </div>
+        <button class="button primary" type="button" @click="paypalHelpOpen = true">{{ t('admin.openPaypalGuide') }}</button>
+      </div>
+
+      <div class="paypal-setup-steps">
+        <article>
+          <span class="paypal-step-number">01</span>
+          <div><strong>{{ t('admin.paypalStepAccount') }}</strong><p>{{ t('admin.paypalStepAccountDesc') }}</p></div>
+        </article>
+        <article>
+          <span class="paypal-step-number">02</span>
+          <div><strong>{{ t('admin.paypalStepApp') }}</strong><p>{{ t('admin.paypalStepAppDesc') }}</p></div>
+        </article>
+        <article>
+          <span class="paypal-step-number">03</span>
+          <div><strong>{{ t('admin.paypalStepCredentials') }}</strong><p>{{ t('admin.paypalStepCredentialsDesc') }}</p></div>
+        </article>
+        <article>
+          <span class="paypal-step-number">04</span>
+          <div><strong>{{ t('admin.paypalStepWebhook') }}</strong><p>{{ t('admin.paypalStepWebhookDesc') }}</p></div>
+        </article>
+      </div>
+
+      <form class="admin-form paypal-config-form" @submit.prevent="saveSite">
+        <div class="admin-panel-head paypal-config-head">
+          <div>
+            <h3>{{ t('admin.paypalCredentialsTitle') }}</h3>
+            <p class="muted">{{ t('admin.paypalCredentialsDesc') }}</p>
+          </div>
+          <span :class="['paypal-mode-badge', paymentForm.paypal_mode === 'live' ? 'is-live' : 'is-sandbox']">
+            {{ paymentForm.paypal_mode === 'live' ? t('admin.paypalLiveBadge') : t('admin.paypalSandboxBadge') }}
+          </span>
+        </div>
+        <div class="form-grid paypal-config-grid">
+          <label><input type="checkbox" v-model="paymentForm.paypal_enabled" :aria-label="t('admin.enablePaypal')" /> {{ t('admin.enablePaypal') }}</label>
+          <label>{{ t('admin.paypalModeLabel') }}<select v-model="paymentForm.paypal_mode"><option value="sandbox">{{ statusText('sandbox') }}</option><option value="live">{{ statusText('live') }}</option></select></label>
+          <label>{{ t('admin.paypalClientIdLabel') }}<input v-model="paymentForm.paypal_client_id" placeholder="PayPal Client ID" maxlength="300" autocomplete="off" /></label>
+          <div class="secret-field">
+            <label>{{ t('admin.paypalSecretLabel') }}<input v-model="paymentForm.paypal_secret" :type="paymentSecretsVisible ? 'text' : 'password'" :placeholder="paypalSecretSaved ? t('admin.paypalSecretSavedPlaceholder') : 'PayPal Secret'" maxlength="500" autocomplete="new-password" /></label>
+            <button class="button ghost" type="button" @click="paymentSecretsVisible = !paymentSecretsVisible">{{ paymentSecretsVisible ? t('admin.hidePaymentSecrets') : t('admin.showPaymentSecrets') }}</button>
+            <small v-if="paypalSecretSaved" class="secret-saved-note">{{ t('admin.paypalSecretSavedHelp') }}</small>
+          </div>
+          <div class="secret-field">
+            <label>{{ t('admin.paypalWebhookIdLabel') }}<input v-model="paymentForm.paypal_webhook_id" :type="paymentSecretsVisible ? 'text' : 'password'" :placeholder="paypalWebhookSaved ? t('admin.paypalWebhookSavedPlaceholder') : 'PayPal Webhook ID'" maxlength="300" autocomplete="new-password" /></label>
+            <small v-if="paypalWebhookSaved" class="secret-saved-note">{{ t('admin.paypalWebhookSavedHelp') }}</small>
+            <small class="secret-saved-note">{{ t('admin.paypalWebhookIdHelp') }}</small>
+          </div>
+          <label>{{ t('admin.currency') }}<input v-model="paymentForm.currency" placeholder="USD" maxlength="3" autocapitalize="characters" inputmode="latin" /></label>
+        </div>
+        <div class="paypal-webhook-note">
+          <span>{{ t('admin.paypalWebhookUrl') }}</span>
+          <code>{{ paypalWebhookUrl }}</code>
+        </div>
+        <p class="form-message warning">{{ t('admin.paypalLiveWarning') }}</p>
+        <div class="row-actions compact-actions">
+          <button class="button ghost" type="button" :disabled="!!savingAction" @click="testPaypalConnection">
+            {{ actionBusy('paypal-check') ? t('common.loading') : t('admin.paypalTestConnection') }}
+          </button>
+          <button class="button ghost" type="button" :disabled="!!savingAction" @click="testPaypalOrder">
+            {{ actionBusy('paypal-order-test') ? t('common.loading') : t('admin.paypalTestOrder') }}
+          </button>
+          <button class="button primary" type="submit" :disabled="!!savingAction">
+            {{ actionBusy('site') ? t('common.loading') : t('admin.savePaypalConfig') }}
+          </button>
+        </div>
+        <div v-if="paypalTestResult" class="paypal-test-result success">
+          <strong>{{ t('admin.paypalOrderTestSuccessTitle') }}</strong>
+          <span>{{ t('admin.paypalTestOrderId') }}: {{ paypalTestResult.paypal_order_id }}</span>
+          <span>{{ t('admin.paypalTestStatus') }}: {{ paypalTestResult.paypal_status || '-' }}</span>
+          <a v-if="paypalTestResult.approve_url" :href="paypalTestResult.approve_url" target="_blank" rel="noopener noreferrer">{{ t('admin.paypalOpenTestOrder') }}</a>
+        </div>
+        <pre v-if="paypalTestError" class="paypal-test-result error">{{ paypalTestError }}</pre>
+      </form>
+    </section>
+
     <section v-if="tab === 'site'" class="panel">
       <div class="admin-panel-head">
         <h2>{{ t('admin.siteConfig') }}</h2>
@@ -3313,57 +4312,57 @@ watch([filteredBlogs, blogPageCount], () => { blogPage.value = clampPage(blogPag
           <input v-model="siteForm.instagram" type="url" placeholder="Instagram" maxlength="300" autocomplete="url" inputmode="url" />
           <input v-model="siteForm.tracking_url_template" type="url" :placeholder="t('admin.trackingUrlTemplate')" maxlength="500" autocomplete="url" inputmode="url" />
         </div>
-        <h3>{{ t('admin.paymentConfig') }}</h3>
-        <p class="muted">{{ t('admin.paymentConfigHelp') }}</p>
-        <p class="muted">{{ t('admin.paypalWebhookUrl') }} {{ paypalWebhookUrl }}</p>
-        <div class="form-grid">
-          <label><input type="checkbox" v-model="paymentForm.paypal_enabled" :aria-label="t('admin.enablePaypal')" /> {{ t('admin.enablePaypal') }}</label>
-          <select v-model="paymentForm.paypal_mode"><option value="sandbox">{{ statusText('sandbox') }}</option><option value="live">{{ statusText('live') }}</option></select>
-          <input v-model="paymentForm.paypal_client_id" placeholder="PayPal Client ID" maxlength="300" autocomplete="off" />
-          <div class="secret-field">
-            <input v-model="paymentForm.paypal_secret" :type="paymentSecretsVisible ? 'text' : 'password'" :placeholder="paypalSecretSaved ? t('admin.paypalSecretSavedPlaceholder') : 'PayPal Secret'" maxlength="500" autocomplete="new-password" />
-            <button class="button ghost" type="button" @click="paymentSecretsVisible = !paymentSecretsVisible">
-              {{ paymentSecretsVisible ? t('admin.hidePaymentSecrets') : t('admin.showPaymentSecrets') }}
-            </button>
-            <small v-if="paypalSecretSaved" class="secret-saved-note">{{ t('admin.paypalSecretSavedHelp') }}</small>
-          </div>
-          <div class="secret-field">
-            <input v-model="paymentForm.paypal_webhook_id" :type="paymentSecretsVisible ? 'text' : 'password'" :placeholder="paypalWebhookSaved ? t('admin.paypalWebhookSavedPlaceholder') : 'PayPal Webhook ID'" maxlength="300" autocomplete="new-password" />
-            <small v-if="paypalWebhookSaved" class="secret-saved-note">{{ t('admin.paypalWebhookSavedHelp') }}</small>
-            <small class="secret-saved-note">{{ t('admin.paypalWebhookIdHelp') }}</small>
-          </div>
-          <input v-model="paymentForm.currency" :placeholder="t('admin.currency')" maxlength="3" autocapitalize="characters" inputmode="latin" />
-        </div>
         <h3>{{ t('admin.contact') }}</h3>
         <div class="form-grid">
-          <label><input type="checkbox" v-model="contactForm.talk_enabled" :aria-label="t('admin.enableTalk')" /> {{ t('admin.enableTalk') }}</label>
-          <input v-model="contactForm.talk_label" :placeholder="t('admin.talkLabel')" maxlength="40" />
-          <input v-model="contactForm.talk_url" type="url" :placeholder="t('admin.talkUrl')" maxlength="300" autocomplete="url" inputmode="url" />
-          <label><input type="checkbox" v-model="contactForm.line_enabled" :aria-label="t('admin.enableLine')" /> {{ t('admin.enableLine') }}</label>
-          <input v-model="contactForm.line_label" :placeholder="t('admin.lineLabel')" maxlength="40" />
-          <input v-model="contactForm.line_url" type="url" :placeholder="t('admin.lineUrl')" maxlength="300" autocomplete="url" inputmode="url" />
+          <label><input type="checkbox" v-model="contactForm.kakao_enabled" :aria-label="t('admin.enableKakao')" /> {{ t('admin.enableKakao') }}</label>
+          <input v-model="contactForm.kakao_label" :placeholder="t('admin.kakaoLabel')" maxlength="40" />
+          <input v-model="contactForm.kakao_id" :placeholder="t('admin.kakaoId')" maxlength="120" autocomplete="off" />
+          <input v-model="contactForm.kakao_url" type="url" :placeholder="t('admin.kakaoUrl')" maxlength="300" autocomplete="url" inputmode="url" />
+          <label><input type="checkbox" v-model="contactForm.whatsapp_enabled" :aria-label="t('admin.enableWhatsapp')" /> {{ t('admin.enableWhatsapp') }}</label>
+          <input v-model="contactForm.whatsapp_label" :placeholder="t('admin.whatsappLabel')" maxlength="40" />
+          <input v-model="contactForm.whatsapp_id" :placeholder="t('admin.whatsappId')" maxlength="120" autocomplete="off" />
+          <input v-model="contactForm.whatsapp_url" type="url" :placeholder="t('admin.whatsappUrl')" maxlength="300" autocomplete="url" inputmode="url" />
         </div>
         <div class="section-head compact-admin-head">
-          <h3>{{ t('admin.contentZh') }}</h3>
+          <h3>{{ t('admin.multilingualContent') }}</h3>
+          <button class="button ghost site-translation-button" type="button" :disabled="!!savingAction || siteTranslationGenerating" @click="autoTranslateSiteContent">
+            <Languages :size="15" />
+            <span>{{ siteTranslationGenerating ? t('common.loading') : t('admin.siteAutoTranslate') }}</span>
+          </button>
         </div>
-        <div class="translation-grid single">
-          <article class="translation-panel">
-            <textarea v-model="policyI18n.zh.care" :placeholder="t('admin.care')" maxlength="2000" />
-            <textarea v-model="policyI18n.zh.shipping" :placeholder="t('admin.shipping')" maxlength="2000" />
-            <textarea v-model="policyI18n.zh.refund" :placeholder="t('admin.refund')" maxlength="2000" />
-            <p class="format-help" data-testid="site-content-format-help">
-              {{ t('admin.contentFormatHelp') }}
-              客户评价格式 <code>姓名|国家|评分1-5|标题|内容|商品slug|头像URL|宠物照片URL|作品照片URL|视频URL</code>
-              博客格式 <code>slug|日期|标题|摘要|正文|图片URL|标签</code>
-            </p>
+        <p class="format-help">{{ t('admin.translationServiceNote') }}</p>
+        <div class="translation-grid">
+          <article v-for="lang in adminLangs" :key="lang" class="translation-panel">
+            <h3>{{ lang === 'zh' ? t('admin.reviewZh') : lang === 'en' ? t('admin.reviewEnglish') : t('admin.reviewKorean') }}</h3>
+            <label>
+              <span>{{ t('admin.care') }}</span>
+              <textarea v-model="policyI18n[lang].care" :placeholder="t('admin.care')" maxlength="2000" />
+            </label>
+            <label>
+              <span>{{ t('admin.shipping') }}</span>
+              <textarea v-model="policyI18n[lang].shipping" :placeholder="t('admin.shipping')" maxlength="2000" />
+            </label>
+            <label>
+              <span>{{ t('admin.refund') }}</span>
+              <textarea v-model="policyI18n[lang].refund" :placeholder="t('admin.refund')" maxlength="2000" />
+            </label>
             <div class="content-editor-block">
               <div class="content-editor-head">
                 <strong>{{ t('admin.faqEditorTitle') }}</strong>
                 <span>{{ t('admin.faqEditorHelp') }}</span>
               </div>
-              <code>例：需要哪些照片？|建议上传正脸、侧脸和全身照。</code>
-              <textarea v-model="siteForm.faq_text" class="tall-textarea" :aria-label="t('admin.faqText')" :placeholder="t('admin.faqText')" maxlength="120000" />
+              <code>问题|答案</code>
+              <textarea v-model="faqI18n[lang]" class="tall-textarea" :aria-label="t('admin.faqText')" :placeholder="t('admin.faqText')" maxlength="120000" />
             </div>
+          </article>
+        </div>
+        <div class="translation-grid single">
+          <article class="translation-panel">
+            <p class="format-help" data-testid="site-content-format-help">
+              {{ t('admin.contentFormatHelp') }}
+              客户评价格式 <code>姓名|国家|评分1-5|标题|内容|商品slug|头像URL|宠物照片URL|作品照片URL|视频URL</code>
+              博客格式 <code>slug|日期|标题|摘要|正文|图片URL|标签</code>
+            </p>
             <div class="content-editor-block">
               <div class="content-editor-head">
                 <strong>{{ t('admin.reviewsEditorTitle') }}</strong>
@@ -3385,6 +4384,39 @@ watch([filteredBlogs, blogPageCount], () => { blogPage.value = clampPage(blogPag
         <button class="button primary" :disabled="!!savingAction">{{ actionBusy('site') ? t('common.loading') : t('admin.saveConfig') }}</button>
       </form>
     </section>
+
+    <div v-if="paypalHelpOpen" class="modal-backdrop" @click.self="paypalHelpOpen = false">
+      <section class="admin-modal wide paypal-guide-modal" role="dialog" aria-modal="true" :aria-labelledby="'paypal-guide-title'">
+        <header>
+          <div>
+            <p class="eyebrow">{{ t('admin.paypalEyebrow') }}</p>
+            <h2 id="paypal-guide-title">{{ t('admin.paypalGuideTitle') }}</h2>
+          </div>
+          <button class="drawer-close" type="button" :aria-label="t('common.close')" @click="paypalHelpOpen = false">×</button>
+        </header>
+        <p class="paypal-guide-intro">{{ t('admin.paypalGuideIntro') }}</p>
+        <ol class="paypal-guide-list">
+          <li>
+            <div><strong>{{ t('admin.paypalGuideStep1Title') }}</strong><p>{{ t('admin.paypalGuideStep1Desc') }}</p></div>
+            <a href="https://www.paypal.com/business" target="_blank" rel="noreferrer">{{ t('admin.paypalOpenBusiness') }} ↗</a>
+          </li>
+          <li><div><strong>{{ t('admin.paypalGuideStep2Title') }}</strong><p>{{ t('admin.paypalGuideStep2Desc') }}</p></div></li>
+          <li><div><strong>{{ t('admin.paypalGuideStep3Title') }}</strong><p>{{ t('admin.paypalGuideStep3Desc') }}</p></div></li>
+          <li><div><strong>{{ t('admin.paypalGuideStep4Title') }}</strong><p>{{ t('admin.paypalGuideStep4Desc') }}</p></div></li>
+          <li><div><strong>{{ t('admin.paypalGuideStep5Title') }}</strong><p>{{ t('admin.paypalGuideStep5Desc') }}</p></div></li>
+        </ol>
+        <div class="paypal-guide-check">
+          <strong>{{ t('admin.paypalGuideCheckTitle') }}</strong>
+          <p>{{ t('admin.paypalGuideCheckDesc') }}</p>
+          <code>{{ paypalWebhookUrl }}</code>
+        </div>
+        <p class="form-message warning">{{ t('admin.paypalGuideSecurity') }}</p>
+        <div class="modal-actions">
+          <button class="button ghost" type="button" @click="paypalHelpOpen = false">{{ t('common.close') }}</button>
+          <button class="button primary" type="button" @click="paypalHelpOpen = false">{{ t('admin.paypalGuideStartConfig') }}</button>
+        </div>
+      </section>
+    </div>
 
     <div v-if="categoryModalOpen" class="modal-backdrop" @click.self="closeCategoryModal">
       <section class="admin-modal" role="dialog" aria-modal="true">
@@ -3445,7 +4477,7 @@ watch([filteredBlogs, blogPageCount], () => { blogPage.value = clampPage(blogPag
             <input v-model.number="productForm.base_price_cents" type="number" :placeholder="t('admin.basePrice')" max="999999999" step="1" />
             <input v-model="productForm.currency" :placeholder="t('admin.currency')" maxlength="3" autocapitalize="characters" inputmode="latin" />
             <input v-model.number="productForm.deposit_percent" type="number" :placeholder="t('admin.depositPercent')" max="100" step="1" />
-            <input v-model="productForm.image_url" type="url" :placeholder="t('admin.imageUrl')" maxlength="500" autocomplete="url" inputmode="url" />
+            <input v-model="productForm.image_url" type="text" :placeholder="t('admin.imageUrl')" maxlength="500" autocomplete="url" inputmode="url" />
             <select v-model="productForm.status"><option v-for="s in publishStatuses" :key="s" :value="s">{{ statusText(s) }}</option></select>
           </div>
           <div class="content-editor-block compact-content-editor">
@@ -3463,21 +4495,28 @@ watch([filteredBlogs, blogPageCount], () => { blogPage.value = clampPage(blogPag
           <input v-model="productForm.tags" :placeholder="t('admin.tags')" maxlength="819" />
           <input v-model="productForm.use_cases_text" :placeholder="t('admin.useCasesText')" maxlength="1200" />
           <div class="section-head compact-admin-head">
-            <h3>{{ t('admin.contentZh') }}</h3>
+            <h3>{{ t('admin.multilingualContent') }}</h3>
+            <button class="button ghost site-translation-button" type="button" :disabled="!!savingAction || productTranslationGenerating" @click="autoTranslateProduct">
+              <Languages :size="15" />
+              <span>{{ productTranslationGenerating ? t('common.loading') : t('admin.productAutoTranslate') }}</span>
+            </button>
           </div>
-          <div class="translation-grid single">
-            <article class="translation-panel">
-              <input v-model="productI18n.zh.title" :placeholder="t('admin.productTitle')" maxlength="160" required />
-              <input v-model="productI18n.zh.subtitle" :placeholder="t('admin.subtitle')" maxlength="240" />
-              <input v-model="productI18n.zh.alt_text" :placeholder="t('admin.altText')" maxlength="180" />
-              <input v-model="productI18n.zh.seo_title" :placeholder="t('admin.seoTitle')" maxlength="120" />
-              <textarea v-model="productI18n.zh.description" :placeholder="t('admin.productDesc')" maxlength="5000" />
-              <textarea v-model="productI18n.zh.seo_description" :placeholder="t('admin.seoDescription')" maxlength="300" />
+          <p class="format-help product-translation-help">{{ t('admin.productTranslationHelp') }}</p>
+          <p class="format-help">{{ t('admin.translationServiceNote') }}</p>
+          <div class="translation-grid">
+            <article v-for="lang in adminLangs" :key="lang" class="translation-panel">
+              <h3>{{ lang === 'zh' ? t('admin.reviewZh') : lang === 'en' ? t('admin.reviewEnglish') : t('admin.reviewKorean') }}</h3>
+              <input v-model="productI18n[lang].title" :placeholder="t('admin.productTitle')" maxlength="160" :required="lang === 'zh'" />
+              <input v-model="productI18n[lang].subtitle" :placeholder="t('admin.subtitle')" maxlength="240" />
+              <input v-model="productI18n[lang].alt_text" :placeholder="t('admin.altText')" maxlength="180" />
+              <input v-model="productI18n[lang].seo_title" :placeholder="t('admin.seoTitle')" maxlength="120" />
+              <textarea v-model="productI18n[lang].description" :placeholder="t('admin.productDesc')" maxlength="5000" />
+              <textarea v-model="productI18n[lang].seo_description" :placeholder="t('admin.seoDescription')" maxlength="300" />
               <p class="format-help compact-format-help">
                 {{ t('admin.optionsText') }}
                 <code>6 英寸头部,160000</code>
               </p>
-              <textarea v-model="productI18n.zh.options_text" :placeholder="t('admin.optionsText')" maxlength="5000" />
+              <textarea v-model="productI18n[lang].options_text" :placeholder="t('admin.optionsText')" maxlength="5000" />
             </article>
           </div>
           <div class="modal-actions">
@@ -3564,6 +4603,72 @@ watch([filteredBlogs, blogPageCount], () => { blogPage.value = clampPage(blogPag
       </section>
     </div>
 
+    <div v-if="reviewModalOpen" class="modal-backdrop" @click.self="closeReviewModal">
+      <section class="admin-modal wide review-editor-modal" role="dialog" aria-modal="true">
+        <header>
+          <div>
+            <p class="eyebrow">{{ t('admin.reviewsManage') }}</p>
+            <h2>{{ reviewForm.id ? t('admin.editReview') : t('admin.addReview') }}</h2>
+          </div>
+          <button class="drawer-close" type="button" :aria-label="t('common.close')" :disabled="!!savingAction || !!reviewUploadBusy" @click="closeReviewModal">×</button>
+        </header>
+        <form class="admin-form" @submit.prevent="saveReview">
+          <div v-if="reviewUnsavedConfirmOpen" class="form-message warning unsaved-warning">
+            <span>{{ t('admin.unsavedReviewChanges') }}</span>
+            <button class="button ghost" type="button" @click="keepEditingReviewForm">{{ t('admin.keepEditing') }}</button>
+            <button class="button danger" type="button" @click="discardReviewFormChanges">{{ t('admin.discardChanges') }}</button>
+          </div>
+          <div class="form-grid">
+            <label>{{ t('admin.reviewName') }}<input v-model="reviewForm.name" maxlength="120" required /></label>
+            <label>{{ t('admin.reviewCountry') }}<input v-model="reviewForm.country" maxlength="80" required /></label>
+            <label>{{ t('admin.reviewRating') }}<input v-model.number="reviewForm.rating" type="number" min="1" max="5" step="1" required /></label>
+            <label>{{ t('admin.reviewStatus') }}<select v-model="reviewForm.status"><option v-for="status in publishStatuses" :key="status" :value="status">{{ statusText(status) }}</option></select></label>
+            <label>{{ t('admin.reviewProductSlug') }}<input v-model="reviewForm.product_slug" maxlength="100" /></label>
+            <label>{{ t('admin.reviewVideoUrl') }}<input v-model="reviewForm.video_url" type="url" maxlength="500" inputmode="url" /></label>
+          </div>
+          <div class="review-media-editor">
+            <div class="content-editor-head">
+              <strong>{{ t('admin.reviewAvatar') }}</strong>
+              <span>{{ t('admin.reviewImagesHelp') }}</span>
+            </div>
+            <div class="review-upload-row">
+              <input ref="reviewAvatarInput" class="sr-only" type="file" accept="image/*" @change="uploadReviewFiles($event, 'avatar')" />
+              <button class="button ghost" type="button" :disabled="!!reviewUploadBusy" @click="reviewAvatarInput?.click()">
+                <Upload :size="15" />{{ reviewUploadBusy === 'avatar' ? t('common.loading') : t('admin.reviewUploadAvatar') }}
+              </button>
+              <input v-model="reviewForm.avatar_url" :placeholder="t('admin.reviewAvatarUrl')" maxlength="500" />
+            </div>
+            <div class="review-upload-row">
+              <input ref="reviewImageInput" class="sr-only" type="file" accept="image/*" multiple @change="uploadReviewFiles($event, 'images')" />
+              <button class="button ghost" type="button" :disabled="!!reviewUploadBusy" @click="reviewImageInput?.click()">
+                <ImagePlus :size="15" />{{ reviewUploadBusy === 'images' ? t('common.loading') : t('admin.reviewUploadImages') }}
+              </button>
+              <span class="muted">{{ t('admin.reviewImagesHelp') }}</span>
+            </div>
+            <textarea v-model="reviewForm.images_text" :placeholder="t('admin.reviewImageUrl')" maxlength="12000" />
+            <div v-if="reviewDraftImages().length" class="review-media-preview-grid">
+              <div v-for="(image, index) in reviewDraftImages()" :key="`${image}-${index}`" class="review-media-preview">
+                <img :src="resolveContentImage(image)" :alt="`${t('admin.reviewImages')} ${index + 1}`" loading="lazy" />
+                <button class="icon-button" type="button" :aria-label="t('admin.reviewRemoveImage')" :title="t('admin.reviewRemoveImage')" @click="removeReviewImage(index)"><X :size="15" /></button>
+              </div>
+            </div>
+          </div>
+          <p class="format-help">{{ t('admin.reviewTranslationHelp') }}</p>
+          <div class="translation-grid review-translation-grid">
+            <article v-for="lang in adminLangs" :key="lang" class="translation-panel compact">
+              <h3>{{ lang === 'zh' ? t('admin.reviewZh') : lang === 'en' ? t('admin.reviewEnglish') : t('admin.reviewKorean') }}</h3>
+              <input v-model="reviewI18n[lang].title" :placeholder="t('admin.reviewTitle')" maxlength="200" :required="lang === 'zh'" />
+              <textarea v-model="reviewI18n[lang].content" :placeholder="t('admin.reviewContent')" class="tall-textarea" maxlength="2000" :required="lang === 'zh'" />
+            </article>
+          </div>
+          <div class="modal-actions">
+            <button class="button ghost" type="button" :disabled="!!savingAction || !!reviewUploadBusy" @click="closeReviewModal">{{ t('admin.cancel') }}</button>
+            <button class="button primary" :disabled="!!savingAction || !!reviewUploadBusy">{{ actionBusy('review-form') ? t('common.loading') : t('admin.saveReview') }}</button>
+          </div>
+        </form>
+      </section>
+    </div>
+
     <div v-if="deleteBlogTarget" class="modal-backdrop" @click.self="closeDeleteBlogModal">
       <section class="admin-modal confirm-modal" role="dialog" aria-modal="true">
         <header>
@@ -3578,6 +4683,25 @@ watch([filteredBlogs, blogPageCount], () => { blogPage.value = clampPage(blogPag
           <button class="button ghost" type="button" :disabled="!!savingAction" @click="closeDeleteBlogModal">{{ t('admin.cancel') }}</button>
           <button class="button danger" type="button" :disabled="!!savingAction" @click="confirmDeleteBlog">
             {{ actionBusy(`blog-delete-${deleteBlogTarget.id || deleteBlogTarget.slug}`) ? t('common.loading') : t('admin.confirmDelete') }}
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <div v-if="deleteReviewTarget" class="modal-backdrop" @click.self="closeDeleteReviewModal">
+      <section class="admin-modal confirm-modal" role="dialog" aria-modal="true">
+        <header>
+          <div>
+            <p class="eyebrow">{{ t('admin.reviewsManage') }}</p>
+            <h2>{{ t('admin.deleteReviewTitle') }}</h2>
+          </div>
+          <button class="drawer-close" type="button" :aria-label="t('common.close')" :disabled="!!savingAction" @click="closeDeleteReviewModal">×</button>
+        </header>
+        <p class="muted">{{ t('admin.deleteReviewConfirm', { title: reviewField(deleteReviewTarget, 'title', 'zh') || deleteReviewTarget.name }) }}</p>
+        <div class="modal-actions">
+          <button class="button ghost" type="button" :disabled="!!savingAction" @click="closeDeleteReviewModal">{{ t('admin.cancel') }}</button>
+          <button class="button danger" type="button" :disabled="!!savingAction" @click="confirmDeleteReview">
+            <Trash2 :size="15" />{{ actionBusy(`review-delete-${deleteReviewTarget.id}`) ? t('common.loading') : t('admin.confirmDelete') }}
           </button>
         </div>
       </section>

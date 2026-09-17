@@ -1,5 +1,9 @@
 export const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api'
 
+// This module is the single browser-side boundary for API calls, local session
+// storage, third-party login, and common display helpers. Keeping those rules
+// here prevents individual views from handling tokens or errors differently.
+
 export type Product = {
   id: string
   slug: string
@@ -26,12 +30,12 @@ export type Product = {
   translations?: Record<string, any>
 }
 
-export type Category = { id: string; slug: string; title: string; description: string; sort_order: number; status: string; translations?: Record<string, any>; children?: Category[] }
+export type Category = { id: string; slug: string; title: string; description: string; sort_order: number; status: string; image_url?: string; translations?: Record<string, any>; children?: Category[] }
 export type ProductOption = { id: string; name: string; price_cents: number; translations?: Record<string, any> }
 export type Faq = { id: string; question: string; answer: string; translations?: Record<string, any> }
 export type SiteSettings = Record<string, any>
 export type Order = Record<string, any>
-export type SupportContact = { key: 'talk' | 'line' | 'email'; label: string; url: string; external: boolean }
+export type SupportContact = { key: 'kakao' | 'whatsapp' | 'email'; label: string; value?: string; url: string; external: boolean }
 
 declare global {
   interface Window {
@@ -72,6 +76,9 @@ function withCurrentLang(path: string, options: RequestInit = {}) {
   return `${path}${separator}lang=${encodeURIComponent(lang)}`
 }
 
+// Adds the selected language only to safe read requests. Admin endpoints and
+// mutations must keep their original URL because their payloads already carry
+// the complete data and some endpoints intentionally do not accept lang.
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = { ...(options.headers as Record<string, string> || {}) }
   if (!(options.body instanceof Blob)) headers['Content-Type'] = headers['Content-Type'] || 'application/json'
@@ -86,13 +93,20 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     }
     const text = await res.text().catch(() => '')
     let message = text
+    let data: any = null
     try {
-      const data = JSON.parse(text)
+      data = JSON.parse(text)
       message = data?.message || data?.error || text
     } catch {
       message = text
     }
-    throw new Error(message || res.statusText || `Request failed with ${res.status}`)
+    const error = new Error(message || res.statusText || `Request failed with ${res.status}`) as Error & {
+      status?: number
+      data?: any
+    }
+    error.status = res.status
+    error.data = data
+    throw error
   }
   if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
@@ -106,6 +120,9 @@ export async function upload(file: File): Promise<{ url: string; filename: strin
   })
 }
 
+// The user token is a signed, server-issued payload. The browser does not verify
+// its signature; it only performs a cheap expiry/profile consistency check so a
+// stale local session is removed before rendering private order data.
 export function userToken() {
   return safeGetLocalStorage('user_token')
 }
@@ -173,6 +190,9 @@ function loadGoogleIdentityScript() {
   })
 }
 
+// Google Identity Services is loaded lazily to avoid blocking the public site.
+// The promise is intentionally scoped to one request so a failed popup or
+// blocked third-party script can be reported as a normal login error.
 export async function requestGoogleIdToken(clientId: string): Promise<string> {
   const normalizedClientId = String(clientId || '').trim()
   if (!normalizedClientId) throw new Error('google client id missing')
@@ -200,6 +220,45 @@ export async function requestGoogleIdToken(clientId: string): Promise<string> {
   })
 }
 
+export async function mountGoogleSignInButton(
+  container: HTMLElement,
+  clientId: string,
+  onCredential: (token: string) => void,
+) {
+  const normalizedClientId = String(clientId || '').trim()
+  if (!normalizedClientId) throw new Error('google client id missing')
+  const google = await loadGoogleIdentityScript()
+  container.replaceChildren()
+  google.accounts.id.initialize({
+    client_id: normalizedClientId,
+    callback: (response: any) => {
+      const token = String(response?.credential || '').trim()
+      if (token) onCredential(token)
+    },
+    auto_select: false,
+    cancel_on_tap_outside: true,
+    use_fedcm_for_button: false,
+  })
+  google.accounts.id.renderButton(container, {
+    type: 'standard',
+    theme: 'outline',
+    size: 'large',
+    text: 'signin_with',
+    shape: 'rectangular',
+    logo_alignment: 'left',
+    width: Math.min(360, Math.max(220, container.clientWidth || 320)),
+  })
+}
+
+export async function loginWithGoogleCredential(idToken: string) {
+  const token = String(idToken || '').trim()
+  if (!token) throw new Error('google credential missing')
+  return api<any>('/auth/google', {
+    method: 'POST',
+    body: JSON.stringify({ id_token: token })
+  })
+}
+
 export async function loginWithGoogle(site: SiteSettings = {}, email = '') {
   const googleConfig = site.google || {}
   const clientId = String(googleConfig.client_id || '').trim()
@@ -217,6 +276,9 @@ export async function loginWithGoogle(site: SiteSettings = {}, email = '') {
   })
 }
 
+// Monetary values are stored in cents throughout the API. Intl.NumberFormat is
+// used only at the presentation boundary, with USD as a safe fallback for bad
+// or unsupported currency values.
 export function money(cents: number, currency = 'USD') {
   const amount = Number.isFinite(Number(cents)) ? Number(cents) : 0
   const normalizedCurrency = /^[A-Z]{3}$/.test(String(currency || '').trim().toUpperCase())
@@ -229,26 +291,38 @@ export function money(cents: number, currency = 'USD') {
   }
 }
 
+// KakaoTalk and WhatsApp are fixed customer-inquiry entries with hardcoded
+// destinations; they must always be offered regardless of site settings so the
+// support page never falls back to a contact-less state.
 export function supportContacts(site: SiteSettings = {}, emailLabel = 'Email'): SupportContact[] {
-  const contact = site.contact || {}
   const email = String(site.brand?.email || '').trim().replace(/\s/g, '')
   const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : ''
-  const validExternalUrl = (value: unknown) => {
-    try {
-      const url = new URL(String(value || '').trim())
-      return ['http:', 'https:'].includes(url.protocol) ? url.toString() : ''
-    } catch {
-      return ''
-    }
-  }
-  const talkUrl = validExternalUrl(contact.talk_url)
-  const lineUrl = validExternalUrl(contact.line_url)
   return [
-    contact.talk_enabled && talkUrl ? { key: 'talk' as const, label: contact.talk_label || 'TALK', url: talkUrl, external: true } : null,
-    contact.line_enabled && lineUrl ? { key: 'line' as const, label: contact.line_label || 'LINE', url: lineUrl, external: true } : null,
+    {
+      key: 'kakao' as const,
+      label: 'WoolBuddy',
+      value: 'WoolBuddy',
+      url: 'https://pf.kakao.com/_UWErX',
+      external: true,
+    },
+    {
+      key: 'whatsapp' as const,
+      label: 'WoolBuddy',
+      value: 'WoolBuddy',
+      url: 'https://wa.me/8613583155893',
+      external: true,
+    },
     validEmail ? { key: 'email' as const, label: emailLabel, url: `mailto:${validEmail}`, external: false } : null,
   ].filter(Boolean) as SupportContact[]
 }
+
+// Regular SNS profiles, hardcoded per brand spec (distinct from the customer
+// inquiry entries above and never sourced from site settings).
+export const socialLinks = [
+  { key: 'instagram', label: 'Instagram', handle: '@woolbuddyshop', url: 'https://www.instagram.com/woolbuddyshop/' },
+  { key: 'tiktok', label: 'TikTok', handle: '@woolbuddyshop', url: 'https://www.tiktok.com/@woolbuddyshop' },
+  { key: 'youtube', label: 'YouTube', handle: '@WoolBuddyShop', url: 'https://www.youtube.com/@WoolBuddyShop' },
+] as const
 
 export function primarySupportContact(site: SiteSettings = {}, emailLabel = 'Email') {
   return supportContacts(site, emailLabel)[0] || null

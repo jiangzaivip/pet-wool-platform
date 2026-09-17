@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { api, clearUserSession, currentUser, loginWithGoogle, money, primarySupportContact, safeGetLocalStorage, safeSetLocalStorage, type Order, type SiteSettings } from '../api'
+import { ChevronLeft, ChevronRight, X, ZoomIn } from '@lucide/vue'
+import { api, clearUserSession, currentUser, loginWithGoogle, loginWithGoogleCredential, money, primarySupportContact, safeGetLocalStorage, safeSetLocalStorage, type Order, type SiteSettings } from '../api'
+import GoogleSignInButton from '../components/GoogleSignInButton.vue'
 import { productFallbackImage } from '../contentImages'
 import { setHead } from '../head'
 import { clearPaypalContainer, loadPaypalSdk, renderPaypalCardFields } from '../paypal'
 
-const { t } = useI18n()
+const { locale, t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const user = ref<any>(currentUser())
@@ -18,6 +20,11 @@ const payRecoveryVisible = ref(false)
 const routedEmail = String(route.query.email || '').trim().toLowerCase()
 const loginEmail = ref(routedEmail || user.value?.email || '')
 const loginLoading = ref(false)
+const emailLookupLoading = ref(false)
+const emailLookupSubmitted = ref(false)
+const emailLookupOrders = ref<Order[]>([])
+const emailLookupError = ref('')
+const loginEmailInput = ref<HTMLInputElement | null>(null)
 const ordersLoading = ref(false)
 const payingOrderId = ref('')
 const payRecoveryOrderId = ref('')
@@ -30,6 +37,11 @@ const paypalCardLoading = ref<Record<string, boolean>>({})
 const paypalCardErrors = ref<Record<string, string>>({})
 const expandedOrderId = ref('')
 const orderCopyOutput = ref('')
+const reviewOpenOrderId = ref('')
+const reviewSubmitting = ref(false)
+const reviewError = ref('')
+const reviewForm = reactive({ rating: 5, title: '', content: '' })
+const photoLightbox = ref<{ order: Order; index: number } | null>(null)
 let paypalRenderSeq = 0
 const supportContact = computed(() => {
   return primarySupportContact(site.value, t('support.emailLabel'))
@@ -37,6 +49,15 @@ const supportContact = computed(() => {
 const payRecoveryOrder = computed(() => {
   return orders.value.find((order) => order.id === payRecoveryOrderId.value)
 })
+const photoLightboxImages = computed(() => {
+  const urls = photoLightbox.value?.order?.photo_urls
+  return Array.isArray(urls) ? urls.filter((url: any) => Boolean(String(url || '').trim())) : []
+})
+const photoLightboxIndex = computed(() => {
+  const maxIndex = Math.max(photoLightboxImages.value.length - 1, 0)
+  return Math.min(photoLightbox.value?.index || 0, maxIndex)
+})
+const photoLightboxImage = computed(() => photoLightboxImages.value[photoLightboxIndex.value] || '')
 
 function clearAccountRuntimeState() {
   resetAccountPaypalButtons()
@@ -45,6 +66,15 @@ function clearAccountRuntimeState() {
   payRecoveryOrderId.value = ''
   expandedOrderId.value = ''
   orderCopyOutput.value = ''
+  reviewOpenOrderId.value = ''
+  reviewSubmitting.value = false
+  reviewError.value = ''
+  reviewForm.rating = 5
+  reviewForm.title = ''
+  reviewForm.content = ''
+  emailLookupSubmitted.value = false
+  emailLookupOrders.value = []
+  emailLookupError.value = ''
 }
 
 function paypalContainerId(orderId: string) {
@@ -141,6 +171,9 @@ async function loginGoogleDemo() {
   }
   loginLoading.value = true
   message.value = ''
+  emailLookupSubmitted.value = false
+  emailLookupOrders.value = []
+  emailLookupError.value = ''
   payRecoveryVisible.value = false
   clearUserSession()
   user.value = null
@@ -159,11 +192,80 @@ async function loginGoogleDemo() {
   }
 }
 
+async function handleGoogleCredential(idToken: string) {
+  if (loginLoading.value) return
+  loginLoading.value = true
+  message.value = ''
+  emailLookupSubmitted.value = false
+  emailLookupOrders.value = []
+  emailLookupError.value = ''
+  payRecoveryVisible.value = false
+  clearUserSession()
+  user.value = null
+  orders.value = []
+  clearAccountRuntimeState()
+  try {
+    const result = await loginWithGoogleCredential(idToken)
+    safeSetLocalStorage('user_token', result.token)
+    safeSetLocalStorage('user_profile', JSON.stringify(result.user))
+    user.value = result.user
+    await loadOrders()
+  } catch (error: any) {
+    message.value = error.message || t('account.googleCredentialMissing')
+  } finally {
+    loginLoading.value = false
+  }
+}
+
+function handleGoogleButtonError(error: string) {
+  message.value = error === 'google credential missing'
+    ? t('account.googleCredentialMissing')
+    : t('account.googleLoginUnavailable')
+}
+
+async function lookupOrdersByEmail() {
+  const email = loginEmail.value.trim().toLowerCase()
+  loginEmail.value = email
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    message.value = t('account.emailInvalid')
+    emailLookupSubmitted.value = false
+    emailLookupOrders.value = []
+    emailLookupError.value = ''
+    return
+  }
+  emailLookupLoading.value = true
+  emailLookupSubmitted.value = true
+  emailLookupOrders.value = []
+  emailLookupError.value = ''
+  message.value = ''
+  try {
+    const result = await api<{ orders: Order[] }>('/orders/lookup', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    })
+    emailLookupOrders.value = Array.isArray(result.orders) ? result.orders : []
+  } catch (e: any) {
+    const errorMessage = String(e?.message || '')
+    emailLookupError.value = errorMessage === 'too many order lookup requests'
+      ? t('account.lookupRateLimited')
+      : t('account.lookupFailed')
+  } finally {
+    emailLookupLoading.value = false
+  }
+}
+
+async function focusLoginForPayment() {
+  await nextTick()
+  loginEmailInput.value?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  loginEmailInput.value?.focus()
+}
+
 function logout() {
   clearUserSession()
   user.value = null
   orders.value = []
   ordersLoading.value = false
+  emailLookupLoading.value = false
   clearAccountRuntimeState()
   message.value = ''
   payRecoveryVisible.value = false
@@ -171,6 +273,65 @@ function logout() {
 
 function statusText(value: string) {
   return t(`status.${value}`)
+}
+
+function openReview(order: Order) {
+  if (order.order_status !== 'completed' || order.review) return
+  reviewOpenOrderId.value = order.id
+  reviewForm.rating = 5
+  reviewForm.title = ''
+  reviewForm.content = ''
+  reviewError.value = ''
+}
+
+function closeReview() {
+  reviewOpenOrderId.value = ''
+  reviewSubmitting.value = false
+  reviewError.value = ''
+  reviewForm.rating = 5
+  reviewForm.title = ''
+  reviewForm.content = ''
+}
+
+async function submitReview(order: Order) {
+  if (reviewSubmitting.value || reviewOpenOrderId.value !== order.id) return
+  const content = reviewForm.content.trim()
+  const title = reviewForm.title.trim()
+  if (!content) {
+    reviewError.value = t('account.reviewRequired')
+    return
+  }
+  if (content.length > 2000 || title.length > 200) {
+    reviewError.value = t('account.reviewTooLong')
+    return
+  }
+  reviewSubmitting.value = true
+  reviewError.value = ''
+  try {
+    const updatedOrder = await api<Order>(`/me/orders/${encodeURIComponent(order.id)}/review`, {
+      method: 'POST',
+      headers: userAuthHeaders(),
+      body: JSON.stringify({
+        rating: reviewForm.rating,
+        title,
+        content,
+        lang: locale.value,
+      }),
+    })
+    const index = orders.value.findIndex((item) => item.id === order.id)
+    if (index >= 0) orders.value[index] = updatedOrder
+    closeReview()
+    message.value = t('account.reviewSubmitted')
+  } catch (error: any) {
+    const text = String(error?.message || '')
+    reviewError.value = text === 'review already submitted'
+      ? t('account.reviewAlreadySubmitted')
+      : text === 'order not completed'
+        ? t('account.reviewOnlyCompleted')
+        : t('account.reviewFailed')
+  } finally {
+    reviewSubmitting.value = false
+  }
 }
 
 function orderDate(value: string) {
@@ -215,7 +376,7 @@ function orderProgressSteps(order: Order) {
     t('account.progressPreview'),
     t('account.progressShipping'),
     t('account.progressDone'),
-  ].map((label, index) => ({ label, done: index <= active }))
+  ].map((label, index) => ({ label, done: index <= active, active: index === active }))
 }
 
 function supportTextValue(value: unknown, limit = 500) {
@@ -307,6 +468,37 @@ async function copyOrderSummary(order: Order) {
 
 function toggleOrderDetail(order: Order) {
   expandedOrderId.value = expandedOrderId.value === order.id ? '' : order.id
+}
+
+function openPhotoLightbox(order: Order, index: number) {
+  const images = Array.isArray(order.photo_urls)
+    ? order.photo_urls.filter((url: any) => Boolean(String(url || '').trim()))
+    : []
+  if (!images.length) return
+  photoLightbox.value = {
+    order,
+    index: Math.min(Math.max(index, 0), images.length - 1),
+  }
+}
+
+function closePhotoLightbox() {
+  photoLightbox.value = null
+}
+
+function movePhotoLightbox(step: number) {
+  const count = photoLightboxImages.value.length
+  if (!photoLightbox.value || count < 2) return
+  photoLightbox.value = {
+    ...photoLightbox.value,
+    index: (photoLightboxIndex.value + step + count) % count,
+  }
+}
+
+function handlePhotoLightboxKeydown(event: KeyboardEvent) {
+  if (!photoLightbox.value) return
+  if (event.key === 'Escape') closePhotoLightbox()
+  if (event.key === 'ArrowLeft') movePhotoLightbox(-1)
+  if (event.key === 'ArrowRight') movePhotoLightbox(1)
 }
 
 function userAuthHeaders() {
@@ -543,7 +735,16 @@ onMounted(async () => {
   await loadOrders()
   await capturePaypalReturn()
 })
-onBeforeUnmount(resetAccountPaypalButtons)
+watch(photoLightbox, (lightbox) => {
+  document.body.classList.toggle('modal-open', Boolean(lightbox))
+  if (lightbox) window.addEventListener('keydown', handlePhotoLightboxKeydown)
+  else window.removeEventListener('keydown', handlePhotoLightboxKeydown)
+})
+onBeforeUnmount(() => {
+  resetAccountPaypalButtons()
+  window.removeEventListener('keydown', handlePhotoLightboxKeydown)
+  document.body.classList.remove('modal-open')
+})
 watch(() => t('account.title'), setAccountHead)
 </script>
 
@@ -563,10 +764,58 @@ watch(() => t('account.title'), setAccountHead)
       <div class="account-login-box">
         <label>
           <span>{{ t('account.loginEmail') }}</span>
-          <input v-model="loginEmail" type="email" autocomplete="email" inputmode="email" maxlength="160" />
+          <input ref="loginEmailInput" v-model="loginEmail" type="email" autocomplete="email" inputmode="email" maxlength="160" />
         </label>
-        <button class="button primary" :disabled="loginLoading" @click="loginGoogleDemo">{{ loginLoading ? t('common.loading') : t('account.google') }}</button>
+        <div class="account-login-actions">
+          <GoogleSignInButton
+            v-if="site.google?.auth_mode === 'google' && site.google?.client_id"
+            :client-id="site.google.client_id"
+            :disabled="loginLoading || emailLookupLoading"
+            @credential="handleGoogleCredential"
+            @error="handleGoogleButtonError"
+          />
+          <button v-else class="button primary" type="button" :disabled="loginLoading || emailLookupLoading" @click="loginGoogleDemo">{{ loginLoading ? t('common.loading') : t('account.google') }}</button>
+          <button class="button ghost" type="button" :disabled="loginLoading || emailLookupLoading" @click="lookupOrdersByEmail">{{ emailLookupLoading ? t('common.loading') : t('account.lookupByEmail') }}</button>
+        </div>
       </div>
+      <section v-if="emailLookupSubmitted" class="account-lookup-results">
+        <div class="account-lookup-head">
+          <div>
+            <h3>{{ t('account.lookupResults') }}</h3>
+            <p class="muted">{{ t('account.lookupPrivacy') }}</p>
+          </div>
+          <span v-if="emailLookupLoading" class="muted">{{ t('common.loading') }}</span>
+        </div>
+        <div v-if="emailLookupOrders.length" class="mini-list">
+          <article v-for="order in emailLookupOrders" :key="order.order_no" class="order-card account-lookup-card">
+            <div class="order-card-main">
+              <strong>{{ order.order_no }}</strong>
+              <small>{{ order.product_title }} / {{ order.option_name }}</small>
+              <small>{{ t('account.createdAt') }} {{ orderDate(order.created_at) }}</small>
+            </div>
+            <div class="account-order-status">
+              <span class="status-pill">{{ statusText(order.order_status) }}</span>
+              <small>{{ statusText(order.payment_status) }}</small>
+              <small>{{ nextStepText(order) }}</small>
+              <button
+                v-if="['unpaid', 'balance_due'].includes(order.payment_status)"
+                class="button primary"
+                type="button"
+                @click="focusLoginForPayment"
+              >{{ t('account.loginToContinuePay') }}</button>
+              <a
+                v-if="supportContact"
+                class="button ghost"
+                :href="supportContact.url"
+                :target="supportContact.external ? '_blank' : undefined"
+                :rel="supportContact.external ? 'noopener noreferrer' : undefined"
+              >{{ t('account.contactSupport') }}</a>
+            </div>
+          </article>
+        </div>
+        <div v-else-if="emailLookupError" class="form-message error">{{ emailLookupError }}</div>
+        <div v-else-if="!emailLookupLoading" class="form-message empty">{{ t('account.lookupEmpty') }}</div>
+      </section>
       <div class="account-login-help">
         <p>{{ t('account.loginHelp') }}</p>
         <div class="empty-actions">
@@ -670,47 +919,68 @@ watch(() => t('account.title'), setAccountHead)
             <button class="button ghost" type="button" @click="toggleOrderDetail(order)">
               {{ expandedOrderId === order.id ? t('account.hideDetails') : t('account.viewDetails') }}
             </button>
+            <button
+              v-if="order.order_status === 'completed' && !order.review"
+              class="button primary"
+              type="button"
+              @click="openReview(order); expandedOrderId = order.id"
+            >
+              {{ t('account.writeReview') }}
+            </button>
             <button class="button ghost" type="button" @click="copyOrderSummary(order)">
               {{ t('account.copyOrder') }}
             </button>
           </div>
           <div v-if="expandedOrderId === order.id" class="account-order-detail">
+            <div class="account-detail-hero">
+              <div class="account-detail-hero-copy">
+                <span class="account-detail-eyebrow">{{ t('account.detailStatus') }}</span>
+                <div class="account-detail-status-row">
+                  <strong>{{ statusText(order.order_status) }}</strong>
+                  <span class="account-detail-payment">{{ statusText(order.payment_status) }}</span>
+                </div>
+                <p class="account-detail-next">{{ nextStepText(order) }}</p>
+              </div>
+              <div class="account-detail-order-ref">
+                <span>{{ t('account.detailOrder') }}</span>
+                <strong>{{ order.order_no }}</strong>
+              </div>
+            </div>
             <div class="account-progress">
-              <h3>{{ t('account.progressTitle') }}</h3>
+              <div class="account-progress-head">
+                <h3>{{ t('account.progressTitle') }}</h3>
+                <span>{{ statusText(order.order_status) }}</span>
+              </div>
               <div class="account-progress-steps">
                 <span
                   v-for="step in orderProgressSteps(order)"
                   :key="step.label"
-                  :class="{ done: step.done }"
+                  :class="{ done: step.done, active: step.active }"
                 >{{ step.label }}</span>
               </div>
             </div>
-            <dl>
-              <div>
-                <dt>{{ t('account.detailOrder') }}</dt>
-                <dd>{{ order.order_no }}</dd>
-              </div>
-              <div>
+            <dl class="account-detail-facts">
+              <div class="account-detail-fact account-detail-fact--product">
                 <dt>{{ t('account.detailProduct') }}</dt>
                 <dd>{{ order.product_title }} / {{ order.option_name }}</dd>
               </div>
-              <div>
+              <div class="account-detail-fact account-detail-fact--pet">
                 <dt>{{ t('account.detailPet') }}</dt>
                 <dd>{{ order.pet_name }} {{ order.pet_type }}</dd>
               </div>
-              <div v-if="order.phone">
+              <div v-if="order.phone" class="account-detail-fact">
                 <dt>{{ t('account.detailContact') }}</dt>
                 <dd>{{ order.phone }}<span v-if="order.country"> / {{ order.country }}</span></dd>
               </div>
-              <div v-if="order.shipping_address">
+              <div v-if="order.shipping_address" class="account-detail-fact account-detail-fact--wide">
                 <dt>{{ t('account.detailShippingAddress') }}</dt>
                 <dd>{{ order.shipping_address }}</dd>
               </div>
-              <div v-if="order.notes">
+              <div v-if="order.notes" class="account-detail-fact account-detail-fact--wide">
                 <dt>{{ t('admin.customerNote') }}</dt>
                 <dd>{{ order.notes }}</dd>
               </div>
-              <div v-if="order.shipping_carrier || order.tracking_no">
+              <div v-if="order.shipping_carrier || order.tracking_no" class="account-detail-fact account-detail-fact--wide">
                 <dt>{{ t('account.detailTracking') }}</dt>
                 <dd>
                   {{ order.shipping_carrier || '-' }} {{ order.tracking_no || '' }}
@@ -723,15 +993,11 @@ watch(() => t('account.title'), setAccountHead)
                   >{{ t('account.trackPackage') }}</a>
                 </dd>
               </div>
-              <div>
+              <div class="account-detail-fact account-detail-fact--amount">
                 <dt>{{ t('account.detailAmount') }}</dt>
                 <dd>{{ money(order.amount_cents, order.currency) }} / {{ t(`order.${order.payment_type}`) }}<br>{{ t('account.paidAmount', { amount: money(order.paid_amount_cents || 0, order.currency) }) }} / {{ t('account.remainingAmount', { amount: money(remainingAmount(order), order.currency) }) }}</dd>
               </div>
-              <div>
-                <dt>{{ t('account.detailStatus') }}</dt>
-                <dd>{{ statusText(order.order_status) }} / {{ statusText(order.payment_status) }}</dd>
-              </div>
-              <div>
+              <div class="account-detail-fact">
                 <dt>{{ t('account.detailPhotos') }}</dt>
                 <dd>
                   {{ t('account.photoCount', { count: order.photo_count ?? order.photo_urls?.length ?? 0 }) }}
@@ -739,6 +1005,29 @@ watch(() => t('account.title'), setAccountHead)
                 </dd>
               </div>
             </dl>
+            <section v-if="order.photo_urls?.length" class="account-order-photos">
+              <div class="account-order-photos-head">
+                <div>
+                  <h3>{{ t('account.detailPhotos') }}</h3>
+                  <p>{{ t('account.photoSecureNote') }}</p>
+                </div>
+                <span class="status-pill">{{ t('account.photoCount', { count: order.photo_urls.length }) }}</span>
+              </div>
+              <div class="account-order-photo-grid">
+                <button
+                  v-for="(photoUrl, index) in order.photo_urls"
+                  :key="`${photoUrl}-${index}`"
+                  class="account-order-photo"
+                  type="button"
+                  :aria-label="`${t('account.detailPhotos')} ${index + 1}`"
+                  @click="openPhotoLightbox(order, index)"
+                >
+                  <img :src="photoUrl" :alt="`${t('account.detailPhotos')} ${index + 1}`" loading="lazy" />
+                  <span class="account-order-photo-index">{{ index + 1 }}</span>
+                  <span class="account-order-photo-zoom" aria-hidden="true"><ZoomIn :size="15" /></span>
+                </button>
+              </div>
+            </section>
             <section v-if="order.events?.length" class="account-event-timeline">
               <h3>{{ t('account.timelineTitle') }}</h3>
               <ol>
@@ -747,6 +1036,55 @@ watch(() => t('account.title'), setAccountHead)
                   <strong>{{ event.message }}</strong>
                 </li>
               </ol>
+            </section>
+            <section v-if="order.order_status === 'completed'" class="account-review-panel">
+              <template v-if="order.review">
+                <div class="account-review-summary">
+                  <div class="rating" :aria-label="`${order.review.rating} stars`">★★★★★</div>
+                  <strong>{{ t('account.reviewSubmitted') }}</strong>
+                  <p v-if="order.review.content">{{ order.review.content }}</p>
+                </div>
+              </template>
+              <template v-else-if="reviewOpenOrderId === order.id">
+                <form class="account-review-form" @submit.prevent="submitReview(order)">
+                  <div>
+                    <h3>{{ t('account.reviewTitle') }}</h3>
+                    <p class="muted">{{ t('account.reviewDesc') }}</p>
+                  </div>
+                  <label>
+                    {{ t('account.reviewRating') }}
+                    <span class="review-rating-picker" role="radiogroup" :aria-label="t('account.reviewRating')">
+                      <button
+                        v-for="score in 5"
+                        :key="score"
+                        type="button"
+                        :class="{ active: score <= reviewForm.rating }"
+                        :aria-label="`${score}/5`"
+                        :aria-pressed="score === reviewForm.rating"
+                        @click="reviewForm.rating = score"
+                      >★</button>
+                    </span>
+                  </label>
+                  <label>
+                    {{ t('account.reviewSubject') }}
+                    <input v-model="reviewForm.title" maxlength="200" :placeholder="t('account.reviewSubjectPlaceholder')" />
+                  </label>
+                  <label>
+                    {{ t('account.reviewComment') }}
+                    <textarea v-model="reviewForm.content" maxlength="2000" required :placeholder="t('account.reviewCommentPlaceholder')" />
+                  </label>
+                  <p v-if="reviewError" class="form-message error">{{ reviewError }}</p>
+                  <div class="actions">
+                    <button class="button primary" type="submit" :disabled="reviewSubmitting">
+                      {{ reviewSubmitting ? t('common.loading') : t('account.submitReview') }}
+                    </button>
+                    <button class="button ghost" type="button" :disabled="reviewSubmitting" @click="closeReview">{{ t('common.cancel') }}</button>
+                  </div>
+                </form>
+              </template>
+              <button v-else class="button ghost" type="button" @click="openReview(order)">
+                {{ t('account.writeReview') }}
+              </button>
             </section>
             <div class="account-aftercare">
               <strong>{{ t('account.aftercareTitle') }}</strong>
@@ -803,6 +1141,28 @@ watch(() => t('account.title'), setAccountHead)
           {{ ordersLoading ? t('common.loading') : t('account.refreshOrders') }}
         </button>
       </div>
+    </div>
+    <div
+      v-if="photoLightbox && photoLightboxImage"
+      class="image-lightbox account-order-lightbox"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="t('detail.zoomImage')"
+      @click.self="closePhotoLightbox"
+    >
+      <button class="icon-button lightbox-close" type="button" :aria-label="t('detail.closeImage')" @click="closePhotoLightbox">
+        <X :size="24" />
+      </button>
+      <button v-if="photoLightboxImages.length > 1" class="gallery-nav previous" type="button" :aria-label="t('detail.previousImage')" @click="movePhotoLightbox(-1)">
+        <ChevronLeft :size="28" />
+      </button>
+      <figure>
+        <img :src="photoLightboxImage" :alt="`${t('account.detailPhotos')} ${photoLightboxIndex + 1}`" />
+        <figcaption>{{ photoLightboxIndex + 1 }} / {{ photoLightboxImages.length }}</figcaption>
+      </figure>
+      <button v-if="photoLightboxImages.length > 1" class="gallery-nav next" type="button" :aria-label="t('detail.nextImage')" @click="movePhotoLightbox(1)">
+        <ChevronRight :size="28" />
+      </button>
     </div>
   </main>
 </template>

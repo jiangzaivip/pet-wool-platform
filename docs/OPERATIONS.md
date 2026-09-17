@@ -53,6 +53,37 @@ curl -s http://127.0.0.1:8888/api/health
 
 健康接口只返回服务状态和分类、商品、订单、用户、支付数量，不应暴露 `store.json`、`uploads` 或服务器绝对路径。
 
+## 项目日志
+
+API 会把结构化日志同时打印到进程 stderr，并默认写入：
+
+```text
+/root/pet-wool-platform/logs/pet-wool-structured.log
+```
+
+实时查看：
+
+```bash
+tail -f /root/pet-wool-platform/logs/pet-wool-structured.log
+```
+
+每条日志包含 `timestamp`、`level`、`event`、`request_id`（请求日志）和必要的订单/支付状态字段，方便按请求追踪问题。日志不会记录密码、Token、Cookie、PayPal Secret、Webhook ID 或客户照片内容；客户邮箱只保留哈希值。
+
+默认会记录服务启动、数据加载、HTTP 请求、上传、登录、订单创建和幂等重放、支付创建/捕获/Webhook、邮件通知、后台操作和异常。PayPal 还会记录 OAuth 开始/成功、订单创建开始/成功、请求方法、接口路径、模式、API 地址、耗时、PayPal 请求 ID，以及错误响应中的 HTTP 状态、错误名称、错误代码、错误描述、debug ID 和 issues；不会记录凭据。每天首次启动及 UTC 日期切换后会写入一条 `business.daily_order_summary`，包含当日订单数、未支付订单数、已支付订单数、捕获支付数和按币种收入。
+
+管理端 PayPal 页面有“支付订单测试”按钮。它只向 PayPal 创建一笔 0.01 USD（或零小数币种的最小金额）未捕获测试订单，不写入本站订单和支付表；失败时页面和日志都会显示 PayPal 的详细返回原因。
+
+可在 `.env` 中调整：
+
+```text
+LOG_LEVEL=info
+LOG_TO_FILE=true
+LOG_DIR=/var/log/pet-wool-platform
+LOG_FILE=/var/log/pet-wool-platform/pet-wool-structured.log
+```
+
+正式环境建议使用 `logrotate` 或日志平台按天轮转 `pet-wool-structured.log`，避免日志文件无限增长。
+
 ## 备份
 
 大批量修改商品、订单、站点配置、支付配置或上线前，先创建数据备份：
@@ -188,8 +219,46 @@ npm run export:postgres
 - 替换默认管理端账号和密码。
 - 配置正式 Google OAuth Client ID，并关闭 demo 登录。
 - 配置正式 PayPal Client ID、Secret、Webhook ID 和币种，完成 live 小额回归。
-- 确认 Talk、LINE、社媒链接为真实可访问地址。
+- 确认 KakaoTalk、WhatsApp、社媒链接为真实可访问地址，账号名和链接配置正确。
 - 替换 `/assets` 占位图片为真实自有作品图或授权图片。
 - 如需要数据库承载，先执行 `npm run export:postgres` 并完成正式迁库方案。
 - 执行 `node scripts/backup-data.mjs` 留存上线前备份。
 - 执行 `bash scripts/smoke-check.sh` 和 `node test-results/e2e-check.mjs`，确认 0 失败。
+
+上线前先执行：
+
+```bash
+npm run production:check
+```
+
+该检查不会输出密钥，只检查默认管理员、Google Demo、PayPal Live、HTTPS、SMTP
+和基础站点配置。任何 `FAIL` 都应在发布前处理。
+
+## 订单邮件通知
+
+Node API 支持可选 SMTP 通知。配置 `SMTP_HOST`、`SMTP_FROM`，以及 SMTP 服务要求的
+`SMTP_USER` / `SMTP_PASS` 后，会在以下事件通知客户邮箱和 `NOTIFY_ADMIN_EMAIL`：
+
+配置文件使用项目根目录的 `.env`。API 启动时会自动读取该文件；systemd 环境中也可以通过
+`EnvironmentFile` 注入变量，已经注入的变量优先。QQ 邮箱示例：
+
+```text
+SMTP_HOST=smtp.qq.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=你的QQ邮箱@qq.com
+SMTP_PASS=QQ邮箱授权码
+SMTP_FROM=WoolBuddy <你的QQ邮箱@qq.com>
+NOTIFY_ADMIN_EMAIL=接收通知的邮箱@qq.com
+SMTP_TIMEOUT_MS=10000
+```
+
+`SMTP_PASS` 必须使用 QQ 邮箱生成的授权码，不是 QQ 登录密码。修改 `.env` 后必须重启
+`pet-wool-api`，启动日志中的 `smtp_enabled` 应为 `true`。
+
+- 新订单创建
+- PayPal 捕获成功或 Webhook 确认付款
+- 后台手工修改付款状态
+- 后台修改订单状态
+
+通知发送是异步的，SMTP 暂时不可用不会回滚订单或支付；API 日志会记录失败原因。

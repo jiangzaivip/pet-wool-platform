@@ -4,22 +4,30 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowRight,
+  Camera,
   ChevronDown,
+  CirclePlay,
   Languages,
   Mail,
   Menu,
   MessageCircle,
+  Music2,
   Palette,
   ShoppingBag,
   Sparkles,
   UserRound,
   X,
 } from '@lucide/vue'
-import { api, clearUserSession, currentUser, loginWithGoogle, safeGetLocalStorage, safeSetLocalStorage, type SiteSettings } from './api'
+import { api, clearUserSession, currentUser, loginWithGoogle, loginWithGoogleCredential, safeGetLocalStorage, safeSetLocalStorage, socialLinks, type SiteSettings } from './api'
+import GoogleSignInButton from './components/GoogleSignInButton.vue'
 
 const { locale, t } = useI18n()
 const route = useRoute()
 const router = useRouter()
+
+// App owns the shared storefront chrome: site settings, theme/language
+// preferences, login drawer, mobile navigation, and the support bot. Individual
+// views only render page content and use the same API/session helpers.
 const site = ref<SiteSettings>({})
 type ThemePalette = {
   key: string
@@ -44,7 +52,16 @@ const fallbackThemes: ThemePalette[] = [
 ]
 const fallbackSite: SiteSettings = {
   brand: { name: 'WoolBuddy', email: '' },
-  contact: { talk_enabled: false, talk_label: 'TALK', talk_url: '', line_enabled: false, line_label: 'LINE', line_url: '' },
+  contact: {
+    kakao_enabled: false,
+    kakao_label: 'KakaoTalk',
+    kakao_id: '',
+    kakao_url: '',
+    whatsapp_enabled: false,
+    whatsapp_label: 'WhatsApp',
+    whatsapp_id: '',
+    whatsapp_url: '',
+  },
   theme: { defaultTheme: 'white', themes: fallbackThemes },
   bot: { enabled: false, welcome: { zh: '你好，需要帮助可以在支持页联系我们。', en: 'Hi, visit support if you need help.', ko: '도움이 필요하면 지원 페이지를 방문해 주세요.' } }
 }
@@ -93,6 +110,9 @@ const activeNavKey = computed(() => {
   if (route.path.startsWith('/account')) return 'account'
   return ''
 })
+
+// Contact links are validated before being rendered. This keeps malformed or
+// non-http admin values from becoming clickable navigation in the storefront.
 function validExternalContactUrl(value: unknown) {
   try {
     const url = new URL(String(value || '').trim())
@@ -102,16 +122,16 @@ function validExternalContactUrl(value: unknown) {
   }
 }
 
-const talkUrl = computed(() => validExternalContactUrl(site.value.contact?.talk_url))
-const lineUrl = computed(() => validExternalContactUrl(site.value.contact?.line_url))
+const kakaoUrl = computed(() => validExternalContactUrl(site.value.contact?.kakao_url))
+const whatsappUrl = computed(() => validExternalContactUrl(site.value.contact?.whatsapp_url))
 const contactEmail = computed(() => String(site.value.brand?.email || '').trim())
 const validContactEmail = computed(() => {
   const email = contactEmail.value.replace(/\s/g, '')
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : ''
 })
-const showTalkLink = computed(() => Boolean(site.value.contact?.talk_enabled && talkUrl.value))
-const showLineLink = computed(() => Boolean(route.path === '/support' && site.value.contact?.line_enabled && lineUrl.value))
-const showEmailLink = computed(() => Boolean(!showTalkLink.value && !showLineLink.value && validContactEmail.value))
+const showKakaoLink = computed(() => Boolean(site.value.contact?.kakao_enabled && kakaoUrl.value))
+const showWhatsappLink = computed(() => Boolean(site.value.contact?.whatsapp_enabled && whatsappUrl.value))
+const showEmailLink = computed(() => Boolean(validContactEmail.value))
 const floatingEmailHref = computed(() => {
   if (!validContactEmail.value) return ''
   const params = new URLSearchParams({
@@ -207,15 +227,35 @@ async function loginGoogleDemo() {
   }
 }
 
+async function handleGoogleCredential(idToken: string) {
+  if (loginLoading.value) return
+  loginLoading.value = true
+  loginError.value = ''
+  clearUserSession()
+  user.value = null
+  try {
+    const result = await loginWithGoogleCredential(idToken)
+    safeSetLocalStorage('user_token', result.token)
+    safeSetLocalStorage('user_profile', JSON.stringify(result.user))
+    user.value = result.user
+    loginDrawerOpen.value = false
+  } catch (error: any) {
+    loginError.value = error.message || t('account.googleCredentialMissing')
+  } finally {
+    loginLoading.value = false
+  }
+}
+
+function handleGoogleButtonError(error: string) {
+  loginError.value = error === 'google credential missing'
+    ? t('account.googleCredentialMissing')
+    : t('account.googleLoginUnavailable')
+}
+
 function openLoginDrawer() {
   loginError.value = ''
   loginEmail.value = user.value?.email || ''
   loginDrawerOpen.value = true
-}
-
-function openTalkLogin() {
-  if (!talkUrl.value) return
-  window.open(talkUrl.value, '_blank', 'noopener,noreferrer')
 }
 
 function seedBotWelcome() {
@@ -232,6 +272,9 @@ async function loadSite() {
   setTheme(theme.value || site.value.theme?.defaultTheme || 'white')
 }
 
+// The bot is intentionally a lightweight request/response interaction here;
+// the API owns the knowledge base and language selection so the browser does
+// not need to duplicate business content.
 async function askBot(question = botQuestion.value) {
   const text = question.trim()
   botError.value = ''
@@ -330,6 +373,7 @@ watch(
               type="button"
               class="icon-button preferences-toggle"
               :aria-label="t('chrome.preferences')"
+              :title="t('chrome.preferences')"
               :aria-expanded="preferencesOpen"
               @click.stop="preferencesOpen = !preferencesOpen"
             >
@@ -451,25 +495,23 @@ watch(
         <span>{{ t('account.loginEmail') }}</span>
         <input v-model="loginEmail" type="email" autocomplete="email" :placeholder="t('account.emailPlaceholder')" />
       </label>
-      <button class="third-login google" :disabled="loginLoading" @click="loginGoogleDemo">
+      <GoogleSignInButton
+        v-if="site.google?.auth_mode === 'google' && site.google?.client_id"
+        :client-id="site.google.client_id"
+        :disabled="loginLoading"
+        @credential="handleGoogleCredential"
+        @error="handleGoogleButtonError"
+      />
+      <button v-else class="third-login google" :disabled="loginLoading" @click="loginGoogleDemo">
         <span>G</span>
         {{ loginLoading ? t('common.loading') : t('account.google') }}
-      </button>
-      <button
-        v-if="showTalkLink"
-        class="third-login talk-login"
-        type="button"
-        @click="openTalkLogin"
-      >
-        <span>{{ site.contact?.talk_label || 'TALK' }}</span>
-        {{ t('account.talkLogin', { label: site.contact?.talk_label || 'TALK' }) }}
       </button>
       <p v-if="loginError" class="form-message">{{ loginError }}</p>
     </aside>
     <div class="floating-contact" v-if="site.contact && !isAdminRoute">
       <button v-if="site.bot?.enabled" class="bot-toggle" :aria-label="t('bot.launcher')" :title="t('bot.launcher')" @click="botOpen = !botOpen"><MessageCircle :size="22" /><span>{{ t('bot.launcher') }}</span></button>
-      <a v-if="showTalkLink" :href="talkUrl" target="_blank" rel="noopener noreferrer" class="talk">{{ site.contact.talk_label || 'TALK' }}</a>
-      <a v-if="showLineLink" :href="lineUrl" target="_blank" rel="noopener noreferrer" class="line">{{ site.contact.line_label || 'LINE' }}</a>
+      <a v-if="showKakaoLink" :href="kakaoUrl" target="_blank" rel="noopener noreferrer" class="kakao">{{ site.contact.kakao_label || 'KakaoTalk' }}</a>
+      <a v-if="showWhatsappLink" :href="whatsappUrl" target="_blank" rel="noopener noreferrer" class="whatsapp">{{ site.contact.whatsapp_label || 'WhatsApp' }}</a>
       <a v-if="showEmailLink" :href="floatingEmailHref" class="email" :aria-label="t('support.emailLabel')" :title="t('support.emailLabel')"><Mail :size="21" /></a>
     </div>
     <section v-if="botOpen && !isAdminRoute" class="bot-panel">
@@ -501,6 +543,21 @@ watch(
           </RouterLink>
           <p>{{ t('footer.desc') }}</p>
           <span class="footer-made">{{ t('footer.made') }}</span>
+          <div class="footer-sns">
+            <a
+              v-for="sns in socialLinks"
+              :key="sns.key"
+              :href="sns.url"
+              target="_blank"
+              rel="noopener noreferrer"
+              :aria-label="sns.label"
+              :title="`${sns.label} ${sns.handle}`"
+            >
+              <Camera v-if="sns.key === 'instagram'" :size="18" />
+              <Music2 v-else-if="sns.key === 'tiktok'" :size="18" />
+              <CirclePlay v-else :size="18" />
+            </a>
+          </div>
         </div>
         <nav :aria-label="t('footer.products')">
           <strong>{{ t('footer.explore') }}</strong>

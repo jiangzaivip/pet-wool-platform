@@ -40,6 +40,12 @@ docs/SYSTEM_SETTINGS.md
 test-results/E2E_TEST_PLAN.md
 ```
 
+业务功能和订单全流程图见：
+
+```text
+docs/COMPLETED_FEATURES_AND_ORDER_FLOW.md
+```
+
 ## 当前技术栈
 
 - 前端：Vue 3 + Vite + TypeScript
@@ -48,6 +54,7 @@ test-results/E2E_TEST_PLAN.md
 - 上传：`api-node/uploads/`
 - Web 服务：nginx 监听 8888，前端反代到 Vite 开发服务，API 代理到 Node API
 - 自动化测试：Playwright
+- 订单通知：可选 Node 内置 SMTP，未配置时不会影响下单和支付
 
 ## 常用命令
 
@@ -95,6 +102,12 @@ bash scripts/smoke-check.sh
 ```bash
 cd /root/pet-wool-platform
 node test-results/e2e-check.mjs
+```
+
+上线配置检查：
+
+```bash
+npm run production:check
 ```
 
 清理 E2E 测试残留数据：
@@ -186,7 +199,7 @@ E2E 会自动清理 `commercial-*`、`unpaid-*`、`blocked-*`、`hidden-*`、`co
 - Google 登录入口，支持真实 Google ID Token 校验和开发 demo fallback
 - 管理端订单流程管理、管理员角色和审计日志
 - 管理端站点配置和主题配色
-- TALK / LINE / AI 机器人客服
+- KakaoTalk / WhatsApp / AI 机器人客服
 - 可选社媒外链，仅展示已配置链接
 - 护理说明、FAQ、运输政策、退款政策、评价系统
 - 博客列表和详情页

@@ -215,11 +215,16 @@ for (const [index, review] of (store.site.reviews || []).entries()) {
 }
 
 store.site.brand.name = 'WoolBuddy'
-if (String(store.site.brand.email || '').endsWith('@example.com')) store.site.brand.email = ''
-store.site.contact.talk_label = 'KakaoTalk'
-if (String(store.site.contact.talk_url || '').includes('example.com')) {
-  store.site.contact.talk_enabled = false
-  store.site.contact.talk_url = ''
+store.site.brand.email = 'woolbuddy.pet@gmail.com'
+store.site.contact = {
+  kakao_enabled: true,
+  kakao_label: 'KakaoTalk',
+  kakao_id: 'WoolBuddyShop',
+  kakao_url: '',
+  whatsapp_enabled: true,
+  whatsapp_label: 'WhatsApp',
+  whatsapp_id: 'WoolBuddy',
+  whatsapp_url: '',
 }
 store.site.taxonomies = {
   occasions: ['Birthday Gift', 'Anniversary Gift', 'Memorial Gift', 'Christmas Gift', 'Housewarming Gift', 'Parents Gift'],

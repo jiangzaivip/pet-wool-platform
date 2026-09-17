@@ -21,8 +21,12 @@ backend/target/
 api-node/data/
 api-node/uploads/
 api-node/backups/
+api-node/sql-backups/
 logs/
 release/
+releases/
+*.tar.gz
+*.tar.gz.sha256
 workspace/generated/
 
 # Test artifacts
@@ -34,6 +38,9 @@ test-results/*
 .agents/
 .attachments/
 .codex/
+.deploy/production_ed25519
+.deploy/production_ed25519.pub
+评语及头像/
 *.rar
 
 # OS/editor noise

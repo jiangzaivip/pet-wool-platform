@@ -1,3 +1,5 @@
+// Generates a staging SQL snapshot for the planned database migration. This is
+// an export aid, not the runtime data source.
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
