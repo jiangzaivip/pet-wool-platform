@@ -7,7 +7,6 @@ import Collections from './views/Collections.vue'
 import ProductDetail from './views/ProductDetail.vue'
 import Order from './views/Order.vue'
 import AdminLogin from './views/AdminLogin.vue'
-import AdminDashboard from './views/AdminDashboard.vue'
 import Account from './views/Account.vue'
 import Support from './views/Support.vue'
 import Blog from './views/Blog.vue'
@@ -38,7 +37,7 @@ const router = createRouter({
     { path: '/order', component: Order },
     { path: '/account', component: Account },
     { path: '/admin', component: AdminLogin },
-    { path: '/admin/dashboard', component: AdminDashboard },
+    { path: '/admin/dashboard', component: () => import('./views/AdminDashboard.vue') },
     { path: '/:pathMatch(.*)*', component: NotFound }
   ]
 })

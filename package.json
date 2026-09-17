@@ -3,6 +3,7 @@
     "build": "npm --prefix frontend run build",
     "release:package": "bash scripts/package-release.sh",
     "test:e2e": "node test-results/e2e-check.mjs",
+    "test:admin": "node --experimental-strip-types scripts/verify-admin-console.mjs",
     "test:currency": "node --experimental-strip-types scripts/verify-multicurrency.mjs && node scripts/verify-payment-amounts.mjs && node scripts/verify-webhook-idempotency.mjs",
     "smoke": "bash scripts/smoke-check.sh",
     "export:postgres": "node scripts/export-store-postgres.mjs",

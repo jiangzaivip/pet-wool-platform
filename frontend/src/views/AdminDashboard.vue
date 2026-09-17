@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { adminDependencies, normalizeAdminTab, preserveOrderNote, type AdminResource, type AdminTab } from '../adminState'
 import { ChevronLeft, ChevronRight, ImagePlus, Languages, Trash2, Upload, X, ZoomIn } from '@lucide/vue'
 import { api, money, safeGetLocalStorage, safeRemoveLocalStorage, upload, type Category, type Product, type SiteSettings, type Order } from '../api'
-import { CURRENCY_BASE } from '../currency'
+import { CURRENCY_BASE, convertMinorAmount } from '../currency'
 import { resolveContentImage } from '../contentImages'
 
 const { t } = useI18n()
@@ -18,8 +19,13 @@ type BlogTranslationFields = { title: string; excerpt: string; content: string }
 type ReviewTranslationFields = { title: string; content: string }
 type ProductTranslationFields = { title: string; subtitle: string; description: string; alt_text: string; seo_title: string; seo_description: string; options_text: string }
 const adminLangs: AdminLang[] = ['zh', 'en', 'ko']
-const tab = ref<'overview' | 'users' | 'categories' | 'products' | 'orders' | 'reviews' | 'blog' | 'paypal' | 'site' | 'audit' | 'readiness'>('overview')
-const overview = ref<Record<string, number>>({})
+const route = useRoute()
+const tab = computed<AdminTab>({
+  get: () => normalizeAdminTab(route.query.tab),
+  set: (value) => { void router.push({ query: { ...route.query, tab: value } }) },
+})
+type AdminOverview = { [key: string]: number | Record<string, number>; revenue_by_currency: Record<string, number>; revenue_cents: number }
+const overview = ref<Partial<AdminOverview>>({})
 const users = ref<any[]>([])
 const userSearch = ref('')
 const userStatusFilter = ref('')
@@ -38,8 +44,12 @@ const contactCopyText = ref('')
 const orderCopyOutputTitle = ref('')
 const adminMessage = ref('')
 const savingAction = ref('')
-const initialLoading = ref(true)
-const loadError = ref('')
+const resourceErrors = reactive<Partial<Record<AdminResource, string>>>({})
+const loadedResources = reactive(new Set<AdminResource>())
+const resourceRequests = new Map<AdminResource, Promise<void>>()
+const loadingResources = reactive(new Set<AdminResource>())
+const initialLoading = computed(() => adminDependencies[tab.value].some(part => loadingResources.has(part) || (!loadedResources.has(part) && !resourceErrors[part])))
+const loadError = computed(() => adminDependencies[tab.value].filter(part => resourceErrors[part]).map(part => `${resourceLabel(part)}: ${resourceErrors[part]}`).join(' · '))
 const brokenPhotoKeys = ref(new Set<string>())
 const siteRestoreInput = ref<HTMLInputElement | null>(null)
 const reviewAvatarInput = ref<HTMLInputElement | null>(null)
@@ -54,6 +64,7 @@ const paypalTestError = ref('')
 const fullBackupConfirmOpen = ref(false)
 const siteRestoreUnsavedConfirmOpen = ref(false)
 const dirtyOrderNoteIds = ref(new Set<string>())
+const orderNoteDrafts = new Map<string, string>()
 const pageSize = 12
 const maxSiteRestoreBytes = 2 * 1024 * 1024
 const userPage = ref(1)
@@ -135,12 +146,13 @@ const readinessItems = computed(() => {
   ]
 })
 function moneyByCurrency(summary: Record<string, any> | undefined, fallbackCents = 0) {
-  const source = summary && typeof summary === 'object' ? summary : { CNY: fallbackCents }
+  if ((!summary || typeof summary !== 'object') && fallbackCents > 0) return t('admin.currencySummaryUnavailable')
+  const source = summary && typeof summary === 'object' ? summary : {}
   const parts = Object.entries(source)
     .filter(([, cents]) => Number(cents || 0) > 0)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([currency, cents]) => money(Number(cents || 0), currency))
-  return parts.length ? parts.join(' / ') : money(0, 'CNY')
+  return parts.length ? parts.join(' / ') : money(0, CURRENCY_BASE)
 }
 const overviewItems = computed(() => [
   { key: 'users', label: t('admin.metricUsers'), value: overview.value.users || 0 },
@@ -156,10 +168,12 @@ const overviewItems = computed(() => [
 ])
 function markOrderNoteDirty(order: any) {
   if (!order?.id) return
+  orderNoteDrafts.set(order.id, String(order.internal_note || ''))
   dirtyOrderNoteIds.value = new Set([...dirtyOrderNoteIds.value, order.id])
 }
 
 function clearOrderNoteDirty(orderId: string) {
+  orderNoteDrafts.delete(orderId)
   if (!dirtyOrderNoteIds.value.has(orderId)) return
   const next = new Set(dirtyOrderNoteIds.value)
   next.delete(orderId)
@@ -2580,7 +2594,7 @@ function normalizeUsers(data: any[]) {
 }
 
 async function refreshOverview() {
-  overview.value = await api<Record<string, number>>('/admin/overview')
+  overview.value = await api<AdminOverview>('/admin/overview')
 }
 
 async function refreshAuditLogs() {
@@ -2603,9 +2617,9 @@ async function refreshProducts() {
 
 async function refreshOrders() {
   const orderData = await api<Order[]>('/admin/orders')
-  orders.value = orderData
+  orders.value = orderData.map(order => preserveOrderNote(order, orderNoteDrafts))
   if (selectedOrder.value) {
-    selectedOrder.value = orderData.find((order: any) => order.id === selectedOrder.value?.id) || selectedOrder.value
+    selectedOrder.value = orders.value.find(order => order.id === selectedOrder.value?.id) || selectedOrder.value
   }
 }
 
@@ -2620,55 +2634,51 @@ async function refreshAdminTables(...parts: Array<'overview' | 'users' | 'catego
   }))
 }
 
-async function loadAll() {
-  if (!assertAuth()) {
-    initialLoading.value = false
-    return
-  }
-  loadError.value = ''
-  initialLoading.value = true
-  try {
-    const [overviewData, userData, categoryData, productData, orderData, siteData, auditData] = await Promise.all([
-      api<Record<string, number>>('/admin/overview'),
-      api<any[]>('/admin/users'),
-      api<Category[]>('/admin/categories'),
-      api<Product[]>('/admin/products'),
-      api<Order[]>('/admin/orders'),
-      api<SiteSettings>('/admin/site'),
-      api<any[]>('/admin/audit-logs')
-    ])
-    overview.value = overviewData
-    users.value = normalizeUsers(userData)
-    categories.value = categoryData
-    products.value = productData
-    orders.value = orderData
-    if (selectedOrder.value) {
-      selectedOrder.value = orderData.find((order: any) => order.id === selectedOrder.value?.id) || selectedOrder.value
-    }
-    site.value = siteData
-    auditLogs.value = auditData
-    const shouldSyncSiteForm = tab.value !== 'site'
-    if (shouldSyncSiteForm) {
-      syncSiteForms(siteData)
-    }
-    if (!productForm.category_id && categoryData[0]) productForm.category_id = categoryData[0].id
-  } catch (e: any) {
+function resourceLabel(part: AdminResource) {
+  const labels = { overview: 'overview', users: 'usersManage', categories: 'categories', products: 'productsManage', orders: 'ordersManage', site: 'siteConfig', audit: 'auditLogs' }
+  return t(`admin.${labels[part]}`)
+}
+
+async function refreshSite() {
+  const siteData = await api<SiteSettings>('/admin/site')
+  const shouldSync = !siteFormSnapshot.value || !siteFormDirty.value
+  site.value = siteData
+  if (shouldSync) syncSiteForms(siteData)
+}
+
+function loadResource(part: AdminResource, force = false): Promise<void> {
+  const pending = resourceRequests.get(part)
+  if (pending) return pending
+  if (!force && loadedResources.has(part) && !resourceErrors[part]) return Promise.resolve()
+  loadingResources.add(part)
+  delete resourceErrors[part]
+  const loaders = { overview: refreshOverview, users: refreshUsers, categories: refreshCategories, products: refreshProducts, orders: refreshOrders, site: refreshSite, audit: refreshAuditLogs }
+  const request = Promise.resolve().then(loaders[part]).then(() => {
+    loadedResources.add(part)
+  }).catch((e: any) => {
+    resourceErrors[part] = adminErrorMessage(e)
     if (String(e.message || '') === 'missing token' || !safeGetLocalStorage('admin_token')) {
       safeRemoveLocalStorage('admin_token')
-      router.replace('/admin')
-      return
+      void router.replace('/admin')
     }
-    loadError.value = e.message || t('admin.loadFailed')
-    throw e
-  } finally {
-    initialLoading.value = false
-  }
+  }).finally(() => {
+    loadingResources.delete(part)
+    resourceRequests.delete(part)
+  })
+  resourceRequests.set(part, request)
+  return request
+}
+
+async function loadTab(target: AdminTab = tab.value, force = false) {
+  if (!assertAuth()) return false
+  const parts = adminDependencies[target]
+  await Promise.all(parts.map(part => loadResource(part, force)))
+  return parts.every(part => loadedResources.has(part) && !resourceErrors[part])
 }
 
 async function refreshAll() {
   await runAdminAction('refresh', async () => {
-    await loadAll()
-    showAdminMessage(t('admin.refreshed'))
+    if (await loadTab(tab.value, true)) showAdminMessage(t('admin.refreshed'))
   })
 }
 
@@ -2855,6 +2865,10 @@ function editProduct(product: Product) {
 
 async function saveProduct() {
   if (savingAction.value) return
+  if (productForm.currency !== CURRENCY_BASE) {
+    showAdminMessage(t('admin.krwCurrencyRequired'))
+    return
+  }
   if (!validSlug(productForm.slug)) {
     showAdminMessage(t('admin.slugInvalid'))
     return
@@ -2950,6 +2964,7 @@ async function saveProduct() {
   }
   const payload = {
     ...productForm,
+    currency: CURRENCY_BASE,
     title: productI18n.zh.title,
     subtitle: productI18n.zh.subtitle,
     description: productI18n.zh.description,
@@ -3015,13 +3030,11 @@ async function updateOrder(order: any, field: 'status' | 'payment' | 'note') {
   savingAction.value = key
   try {
     const updatedOrder = await api<Order>(`/admin/orders/${order.id}/${field}`, { method: 'PUT', body })
-    const latestOrder = selectedOrder.value?.id === updatedOrder.id
-      ? await api<Order>(`/admin/orders/${updatedOrder.id}`)
-      : updatedOrder
+    if (field === 'note' && orderNoteDrafts.get(updatedOrder.id) === submitted.internal_note) clearOrderNoteDirty(updatedOrder.id)
+    const latestOrder = preserveOrderNote(updatedOrder, orderNoteDrafts)
     const index = orders.value.findIndex((item: any) => item.id === latestOrder.id)
     if (index >= 0) orders.value[index] = latestOrder
     if (selectedOrder.value?.id === latestOrder.id) selectedOrder.value = latestOrder
-    if (field === 'note') clearOrderNoteDirty(latestOrder.id)
     await refreshOverview()
     showAdminMessage(t('admin.saved'))
   } catch (e: any) {
@@ -3074,9 +3087,10 @@ async function toggleOrderFlag(order: any) {
   savingAction.value = key
   try {
     const updatedOrder = await api<Order>(`/admin/orders/${order.id}/flag`, { method: 'PUT', body: JSON.stringify({ flagged: next, revision: order.revision || 0, updated_at: order.updated_at || '' }) })
+    const mergedOrder = preserveOrderNote(updatedOrder, orderNoteDrafts)
     const index = orders.value.findIndex((item: any) => item.id === updatedOrder.id)
-    if (index >= 0) orders.value[index] = updatedOrder
-    if (selectedOrder.value?.id === updatedOrder.id) selectedOrder.value = updatedOrder
+    if (index >= 0) orders.value[index] = mergedOrder
+    if (selectedOrder.value?.id === updatedOrder.id) selectedOrder.value = mergedOrder
     await refreshOverview()
     showAdminMessage(next ? t('admin.flagged') : t('admin.unflagged'))
   } catch (e: any) {
@@ -3445,16 +3459,17 @@ async function testPaypalOrder() {
   }
 }
 
-onMounted(loadAll)
+onMounted(() => { void loadTab() })
+watch(tab, (nextTab) => {
+  closeOrderLightbox()
+  void loadTab(nextTab)
+})
 watch(modalOpen, (open) => {
   document.body.classList.toggle('modal-open', open)
 }, { immediate: true })
 watch(orderLightbox, (lightbox) => {
   if (lightbox) window.addEventListener('keydown', handleOrderLightboxKeydown)
   else window.removeEventListener('keydown', handleOrderLightboxKeydown)
-})
-watch(tab, (nextTab) => {
-  if (nextTab !== 'orders') closeOrderLightbox()
 })
 onUnmounted(() => {
   window.removeEventListener('keydown', handleOrderLightboxKeydown)
@@ -3490,31 +3505,32 @@ watch([filteredBlogs, blogPageCount], () => { blogPage.value = clampPage(blogPag
         <p>{{ adminMessage }}</p>
       </div>
     </Transition>
+    <nav class="tabs" :aria-label="t('admin.title')">
+      <button type="button" :aria-current="tab === 'overview' ? 'page' : undefined" :class="{active: tab === 'overview'}" @click="tab = 'overview'">{{ t('admin.overview') }}</button>
+      <button type="button" :aria-current="tab === 'users' ? 'page' : undefined" :class="{active: tab === 'users'}" @click="tab = 'users'">{{ t('admin.usersManage') }}</button>
+      <button type="button" :aria-current="tab === 'categories' ? 'page' : undefined" :class="{active: tab === 'categories'}" @click="tab = 'categories'">{{ t('admin.categories') }}</button>
+      <button type="button" :aria-current="tab === 'products' ? 'page' : undefined" :class="{active: tab === 'products'}" @click="tab = 'products'">{{ t('admin.productsManage') }}</button>
+      <button type="button" :aria-current="tab === 'orders' ? 'page' : undefined" :class="{active: tab === 'orders'}" @click="tab = 'orders'">{{ t('admin.ordersManage') }}</button>
+      <button type="button" :aria-current="tab === 'reviews' ? 'page' : undefined" :class="{active: tab === 'reviews'}" @click="tab = 'reviews'">{{ t('admin.reviewsManage') }}</button>
+      <button type="button" :aria-current="tab === 'blog' ? 'page' : undefined" :class="{active: tab === 'blog'}" @click="tab = 'blog'">{{ t('admin.blogManage') }}</button>
+      <button type="button" :aria-current="tab === 'paypal' ? 'page' : undefined" :class="{active: tab === 'paypal'}" @click="tab = 'paypal'">{{ t('admin.paypalPage') }}</button>
+      <button type="button" :aria-current="tab === 'site' ? 'page' : undefined" :class="{active: tab === 'site'}" @click="tab = 'site'">{{ t('admin.siteConfig') }}</button>
+      <button type="button" :aria-current="tab === 'audit' ? 'page' : undefined" :class="{active: tab === 'audit'}" @click="tab = 'audit'">{{ t('admin.auditLogs') }}</button>
+      <button type="button" :aria-current="tab === 'readiness' ? 'page' : undefined" :class="{active: tab === 'readiness'}" @click="tab = 'readiness'">{{ t('admin.readinessTitle') }}</button>
+    </nav>
     <section v-if="initialLoading" class="panel empty-state">
       <h2>{{ t('admin.loadingDashboard') }}</h2>
       <p class="muted">{{ t('admin.loadingDashboardDesc') }}</p>
     </section>
     <section v-else-if="loadError" class="panel empty-state">
       <h2>{{ t('admin.loadFailedTitle') }}</h2>
-      <p class="muted">{{ t('admin.loadFailedDesc') }}</p>
+      <p class="muted" role="alert">{{ loadError }}</p>
       <button class="button primary" type="button" :disabled="!!savingAction" @click="refreshAll">
         {{ actionBusy('refresh') ? t('common.loading') : t('admin.retryLoad') }}
       </button>
     </section>
     <template v-else>
-    <div class="tabs">
-      <button :class="{active: tab === 'overview'}" @click="tab = 'overview'">{{ t('admin.overview') }}</button>
-      <button :class="{active: tab === 'users'}" @click="tab = 'users'">{{ t('admin.usersManage') }}</button>
-      <button :class="{active: tab === 'categories'}" @click="tab = 'categories'">{{ t('admin.categories') }}</button>
-      <button :class="{active: tab === 'products'}" @click="tab = 'products'">{{ t('admin.productsManage') }}</button>
-      <button :class="{active: tab === 'orders'}" @click="tab = 'orders'">{{ t('admin.ordersManage') }}</button>
-      <button :class="{active: tab === 'reviews'}" @click="tab = 'reviews'">{{ t('admin.reviewsManage') }}</button>
-      <button :class="{active: tab === 'blog'}" @click="tab = 'blog'">{{ t('admin.blogManage') }}</button>
-      <button :class="{active: tab === 'paypal'}" @click="tab = 'paypal'">{{ t('admin.paypalPage') }}</button>
-      <button :class="{active: tab === 'site'}" @click="tab = 'site'">{{ t('admin.siteConfig') }}</button>
-      <button :class="{active: tab === 'audit'}" @click="tab = 'audit'">{{ t('admin.auditLogs') }}</button>
-      <button :class="{active: tab === 'readiness'}" @click="tab = 'readiness'">{{ t('admin.readinessTitle') }}</button>
-    </div>
+
 
     <section v-if="tab === 'overview'" class="overview-stack">
       <div class="panel action-queue-panel">
@@ -4074,7 +4090,7 @@ watch([filteredBlogs, blogPageCount], () => { blogPage.value = clampPage(blogPag
         <p>{{ t('admin.noOrdersHelp') }}</p>
         <div class="empty-actions">
           <button class="button ghost" type="button" @click="resetOrderFilters">{{ t('admin.resetOrderFilters') }}</button>
-          <button class="button primary" type="button" @click="loadAll">{{ t('admin.refreshData') }}</button>
+          <button class="button primary" type="button" @click="refreshAll">{{ t('admin.refreshData') }}</button>
         </div>
       </div>
     </section>
@@ -4479,12 +4495,22 @@ watch([filteredBlogs, blogPageCount], () => { blogPage.value = clampPage(blogPag
           <div class="form-grid">
             <select v-model="productForm.category_id"><option v-for="c in categories" :key="c.id" :value="c.id">{{ translatedValue(c, 'title') }}</option></select>
             <input v-model="productForm.slug" placeholder="slug" maxlength="80" required />
-            <input v-model.number="productForm.base_price_cents" type="number" :placeholder="t('admin.basePrice')" max="999999999" step="1" />
-            <input v-model="productForm.currency" :placeholder="t('admin.currency')" maxlength="3" autocapitalize="characters" inputmode="latin" />
+            <label class="field">{{ t('admin.basePrice') }}
+              <input v-model.number="productForm.base_price_cents" type="number" min="1" max="999999999" step="1" required />
+            </label>
+            <label class="field">{{ t('admin.currency') }}
+              <input :value="productForm.currency" readonly />
+            </label>
             <input v-model.number="productForm.deposit_percent" type="number" :placeholder="t('admin.depositPercent')" max="100" step="1" />
             <input v-model="productForm.image_url" type="text" :placeholder="t('admin.imageUrl')" maxlength="500" autocomplete="url" inputmode="url" />
             <select v-model="productForm.status"><option v-for="s in publishStatuses" :key="s" :value="s">{{ statusText(s) }}</option></select>
           </div>
+          <p v-if="productForm.currency !== CURRENCY_BASE" class="form-message warning">{{ t('admin.krwCurrencyRequired') }}</p>
+          <p v-else class="format-help" data-testid="product-price-preview">
+            {{ t('admin.pricePreview') }}:
+            {{ money(convertMinorAmount(productForm.base_price_cents, CURRENCY_BASE, 'USD'), 'USD') }} /
+            {{ money(convertMinorAmount(productForm.base_price_cents, CURRENCY_BASE, 'CNY'), 'CNY') }}
+          </p>
           <div class="content-editor-block compact-content-editor">
             <div class="content-editor-head">
               <strong>{{ t('admin.imagesText') }}</strong>
