@@ -6,7 +6,8 @@ import vueFilePond from 'vue-filepond'
 import FilePondPluginFileValidateSize from 'filepond-plugin-file-validate-size'
 import FilePondPluginFileValidateType from 'filepond-plugin-file-validate-type'
 import 'filepond/dist/filepond.min.css'
-import { api, currentUser, money, primarySupportContact, safeGetLocalStorage, safeRemoveLocalStorage, safeSetLocalStorage, upload, type Product, type SiteSettings } from '../api'
+import { api, currentUser, primarySupportContact, safeGetLocalStorage, safeRemoveLocalStorage, safeSetLocalStorage, upload, type Product, type SiteSettings } from '../api'
+import { chargeMoney, displayCurrencyForLang, displayMoney, displayMoneyBreakdown, formatMinorAmount } from '../currency'
 import { productFallbackImage } from '../contentImages'
 import { setHead } from '../head'
 import { clearPaypalContainer, loadPaypalSdk, renderPaypalCardFields } from '../paypal'
@@ -104,9 +105,43 @@ const selected = computed(() => products.value.find(p => p.id === form.product_i
 const selectedOptions = computed(() => validOptions(selected.value))
 const selectedOption = computed(() => selectedOptions.value.find(o => o.id === form.option_id) || selectedOptions.value[0])
 const paypalAvailableForSelected = computed(() => {
-  if (!paypalEnabled.value) return false
-  if (!paypalCurrency.value || !selected.value?.currency) return true
-  return paypalCurrency.value === String(selected.value.currency || '').trim().toUpperCase()
+  // Product prices are stored in the KRW base; PayPal charges the site charge
+  // currency at the fixed converted rate, so the currencies no longer need to
+  // match for PayPal to be available.
+  return paypalEnabled.value
+})
+const paypalChargeCurrency = computed(() => String(site.value?.paypal?.currency || 'USD').trim().toUpperCase() || 'USD')
+// Amount the customer sees in their display currency versus the exact amount
+// PayPal will capture. Before an order exists the preview is computed from the
+// selected form with the same fixed rate table. Once the server has created an
+// order (or payment), the server snapshot is authoritative and shown verbatim.
+const displayCurrencyMatchesCharge = computed(() => displayCurrencyForLang(locale.value) === paypalChargeCurrency.value)
+const paypalChargeText = computed(() => selected.value ? chargeMoney(amount.value, selected.value.currency, paypalChargeCurrency.value, locale.value) : '')
+// Latest server payment snapshot ({ amount_cents, currency, base_amount_cents,
+// base_currency }). Shown exactly as returned; never recomputed client-side.
+const lastPaymentSnapshot = ref<any>(null)
+// Authoritative post-create amounts (order.currency base minor units).
+const orderTotalMinor = ref(0)
+const orderPaidMinor = ref(0)
+const orderCurrency = ref('')
+const orderSummaryActive = computed(() => Boolean(order.value && orderCurrency.value))
+const summaryBreakdown = computed(() => {
+  const currency = orderSummaryActive.value ? orderCurrency.value : selected.value?.currency || ''
+  const total = orderSummaryActive.value ? orderTotalMinor.value : fullAmount.value
+  const current = orderSummaryActive.value
+    ? Number(order.value.initial_payment_cents || total)
+    : amount.value
+  const parts = displayMoneyBreakdown(total, current, currency, locale.value)
+  return { total: parts.total, current: parts.paid, remaining: parts.remaining }
+})
+// Exact charge line for an actual server payment snapshot. Always rendered
+// while a snapshot exists (even when the display currency equals the charge
+// currency) so the customer sees the number PayPal will actually capture.
+const paypalSnapshotChargeText = computed(() => {
+  const payment = lastPaymentSnapshot.value
+  if (!payment) return ''
+  const chargeCurrency = String(payment.currency || paypalChargeCurrency.value || 'USD').trim().toUpperCase()
+  return formatMinorAmount(Number(payment.amount_cents || 0), chargeCurrency, locale.value)
 })
 const fullAmount = computed(() => selectedOption.value?.price_cents || selected.value?.base_price_cents || 0)
 const amount = computed(() => {
@@ -227,7 +262,7 @@ function orderSupportUrl() {
   const body = [
     `${t('account.detailOrder')} ${orderNo}`,
     `${t('account.detailContact')} ${email}`,
-    `${t('account.detailAmount')} ${selected.value ? money(amount.value, selected.value.currency) : '-'}`,
+    `${t('account.detailAmount')} ${selected.value ? displayMoney(amount.value, selected.value.currency, locale.value) : '-'}`,
     `${t('account.supportPage')} ${window.location.href}`,
   ].join('\n')
   if (contact.url.startsWith('mailto:')) {
@@ -460,6 +495,44 @@ function submitErrorMessage(error: any) {
   return t('order.submitFailed')
 }
 
+// After the server returns an order (and optionally a payment snapshot), the
+// local form preview no longer decides what the customer sees: order
+// amount_cents/currency and the payment record are authoritative.
+function adoptServerOrderSummary(result: any) {
+  if (!result?.id) return
+  order.value = result
+  orderCurrency.value = String(result.currency || '').trim().toUpperCase() || orderCurrency.value
+  orderTotalMinor.value = Number(result.amount_cents || 0)
+  const initial = Number(result.initial_payment_cents || 0)
+  orderPaidMinor.value = Number(result.paid_amount_cents || 0) || (result.payment_status === 'unpaid' ? 0 : initial)
+  if (result.payment) lastPaymentSnapshot.value = result.payment
+}
+
+// Prefetch the PayPal payment intent so the SDK renders with the server's
+// exact charge amount/currency already known, and the createOrder callback can
+// reuse the intent instead of racing a fresh request during button click.
+async function prefetchPaypalIntent(orderId: string) {
+  const seq = paypalRenderSeq
+  try {
+    const result = await requestPaypalOrder(orderId)
+    if (seq !== paypalRenderSeq || order.value?.id !== orderId) return null
+    paypalOrder.value = result
+    if (result.payment) lastPaymentSnapshot.value = result.payment
+    if (result.order) adoptServerOrderSummary(result.order)
+    return result
+  } catch {
+    // Rendering will surface the error through createOrder/retry.
+    return null
+  }
+}
+
+function resetOrderSummary() {
+  lastPaymentSnapshot.value = null
+  orderTotalMinor.value = 0
+  orderPaidMinor.value = 0
+  orderCurrency.value = ''
+}
+
 async function submit() {
   if (!form.option_id && selectedOptions.value[0]?.id) {
     form.option_id = selectedOptions.value[0].id
@@ -518,6 +591,7 @@ async function submit() {
   message.value = ''
   order.value = null
   paypalOrder.value = null
+  resetOrderSummary()
   resetPaypalButtons()
   const payload = {
     ...form,
@@ -538,19 +612,16 @@ async function submit() {
       body: JSON.stringify(payload)
     })
     if (seq !== submitSeq) return
-    order.value = result
+    adoptServerOrderSummary(result)
     draftEnabled.value = false
     clearDraft()
     resetOrderFormAfterSuccess(payload.email, payload.customer_name)
     draftEnabled.value = true
-    try {
-      await renderOrderPaypalButtons()
-      if (seq !== submitSeq) return
-      showOrderMessage(t('order.created', { orderNo: result.order_no }), 'success')
-    } catch {
-      if (seq !== submitSeq) return
-      showOrderMessage(t('order.createdPayLater', { orderNo: result.order_no }), 'error')
-    }
+    // Reuse any prefetched intent: if the server already created a matching
+    // payment for this order, rendering starts from it instead of guessing.
+    await renderOrderPaypalButtons()
+    if (seq !== submitSeq) return
+    showOrderMessage(t('order.created', { orderNo: result.order_no }), 'success')
   } catch (e: any) {
     if (seq !== submitSeq) return
     showOrderMessage(submitErrorMessage(e))
@@ -579,7 +650,7 @@ async function captureApprovedPaypalOrder(paypalOrderId = paypalOrder.value?.id)
     method: 'POST',
     body: JSON.stringify({ paypal_order_id: paypalOrderId })
   })
-  order.value = result.order
+  adoptServerOrderSummary(result.order)
   paypalOrder.value = null
   resetPaypalButtons()
   showOrderMessage(t('order.paid', { orderNo: order.value.order_no }), 'success')
@@ -614,8 +685,8 @@ async function retryPaypalPayment() {
 async function renderOrderPaypalButtons() {
   resetPaypalButtons()
   if (!order.value || ['paid', 'deposit_paid'].includes(order.value.payment_status)) return
+  const orderId = order.value.id
   const clientId = String(site.value.paypal?.client_id || '').trim()
-  const currency = String(order.value.currency || selected.value?.currency || paypalCurrency.value || 'USD').trim().toUpperCase()
   if (!clientId) {
     paypalButtonError.value = t('order.paypalButtonError')
     return
@@ -629,16 +700,35 @@ async function renderOrderPaypalButtons() {
     return
   }
   try {
-    const paypal = await loadPaypalSdk({ clientId, currency })
-    if (seq !== paypalRenderSeq) return
+    // Prefetch the payment intent before loading the SDK so the exact charge
+    // amount/currency from the server snapshot is known before any button is
+    // drawn, and createOrder can reuse the same intent.
+    if (!paypalOrder.value || paypalOrder.value?.order?.id !== orderId) {
+      const prefetched = await prefetchPaypalIntent(orderId)
+      if (seq !== paypalRenderSeq || order.value?.id !== orderId) return
+      if (prefetched?.mock) {
+        // Mock mode cannot render SDK buttons; fall back to the confirm button.
+        paypalButtonLoading.value = false
+        return
+      }
+    }
+    const snapshotCurrency = String(paypalOrder.value?.payment?.currency || '').trim().toUpperCase()
+    if (!snapshotCurrency || !paypalOrder.value?.id) throw new Error('paypal payment snapshot missing')
+    const paypal = await loadPaypalSdk({ clientId, currency: snapshotCurrency })
+    if (seq !== paypalRenderSeq || order.value?.id !== orderId) return
     clearPaypalContainer(target)
     const createPaypalOrder = async () => {
+      if (order.value?.id !== orderId) throw new Error('stale paypal render')
+      // Reuse the prefetched/reused intent whenever it still belongs to this
+      // order; otherwise request one and adopt the returned snapshot.
       if (paypalOrder.value?.order?.id === order.value?.id && paypalOrder.value?.id) {
         return paypalOrder.value.id
       }
       try {
         const result = await requestPaypalOrder(order.value.id)
         paypalOrder.value = result
+        if (result.payment) lastPaymentSnapshot.value = result.payment
+        if (result.order) adoptServerOrderSummary(result.order)
         if (result.mock) throw new Error('paypal mock cannot render SDK buttons')
         return result.id
       } catch (error) {
@@ -726,7 +816,7 @@ async function capturePaypal() {
       method: 'POST',
       body: JSON.stringify({ paypal_order_id: paypalOrder.value.id })
     })
-    order.value = result.order
+    adoptServerOrderSummary(result.order)
     showOrderMessage(t('order.paid', { orderNo: order.value.order_no }), 'success')
   } catch (e: any) {
     showOrderMessage(t('order.payFailed'))
@@ -803,14 +893,14 @@ watch(() => form.photo_urls, saveDraft, { deep: true })
         <label>{{ t('order.product') }}
           <select v-model="form.product_id" required @change="onProductChange">
             <option v-for="product in products" :key="product.id" :value="product.id">
-              {{ product.title }} — {{ t('common.from') }} {{ money(validOptions(product)[0]?.price_cents || product.base_price_cents, product.currency) }}
+              {{ product.title }} — {{ t('common.from') }} {{ displayMoney(validOptions(product)[0]?.price_cents || product.base_price_cents, product.currency, locale) }}
             </option>
           </select>
         </label>
         <label>{{ t('order.size') }}
           <select v-model="form.option_id" required>
             <option v-for="option in selectedOptions" :key="option.id" :value="option.id">
-              {{ option.name }} — {{ money(option.price_cents, selected?.currency) }}
+              {{ option.name }} — {{ displayMoney(option.price_cents, selected?.currency, locale) }}
             </option>
           </select>
         </label>
@@ -909,13 +999,19 @@ watch(() => form.photo_urls, saveDraft, { deep: true })
           </select>
         </label>
         <p v-if="!paypalAvailableForSelected" class="form-message warning">{{ t('order.paypalUnavailable') }}</p>
-        <div v-if="selected" class="total-card">
+        <div v-if="selected || orderSummaryActive" class="total-card">
           <span>{{ paypalAvailableForSelected ? t('order.paypalDue') : t('order.paymentDue') }}</span>
-          <strong>{{ money(amount, selected.currency) }}</strong>
+          <strong>{{ summaryBreakdown.current }}</strong>
+          <p v-if="paypalSnapshotChargeText" class="muted order-charge-note">
+            {{ t('order.paypalChargeNote', { amount: paypalSnapshotChargeText }) }}
+          </p>
+          <p v-else-if="!order && paypalAvailableForSelected && !displayCurrencyMatchesCharge" class="muted order-charge-note">
+            {{ t('order.paypalChargeNote', { amount: paypalChargeText }) }}
+          </p>
           <div class="checkout-breakdown">
-            <p><span>{{ t('order.fullPrice') }}</span><strong>{{ money(fullAmount, selected.currency) }}</strong></p>
-            <p><span>{{ t('order.currentPayment') }}</span><strong>{{ money(amount, selected.currency) }}</strong></p>
-            <p><span>{{ t('order.remainingBalance') }}</span><strong>{{ money(remainingAfterPayment, selected.currency) }}</strong></p>
+            <p><span>{{ t('order.fullPrice') }}</span><strong>{{ summaryBreakdown.total }}</strong></p>
+            <p><span>{{ t('order.currentPayment') }}</span><strong>{{ summaryBreakdown.current }}</strong></p>
+            <p><span>{{ t('order.remainingBalance') }}</span><strong>{{ summaryBreakdown.remaining }}</strong></p>
           </div>
         </div>
         <div v-if="!order" class="pre-submit-checklist">

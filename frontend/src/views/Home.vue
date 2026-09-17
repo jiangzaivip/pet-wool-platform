@@ -3,7 +3,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ArrowRight, Check, MessageCircle, ShoppingBag } from '@lucide/vue'
-import { api, type Category, money, type Product, type SiteSettings } from '../api'
+import { api, type Category, type Product, type SiteSettings } from '../api'
+import { displayMoney } from '../currency'
 import { productFrameImage, productFullBodyImage, productImage, productMemorialImage, resolveContentImage, useProductImageFallback } from '../contentImages'
 import { setHead, setJsonLd } from '../head'
 
@@ -204,7 +205,7 @@ watch(locale, load)
             <div class="product-card-proof"><span>★★★★★</span><small>{{ t('home.cardCycle') }}</small><small>{{ t('home.cardHandmade') }}</small></div>
             <div class="tag-row compact"><span v-for="tag in product.tags?.slice(0, 3)" :key="tag">{{ tag }}</span></div>
             <div class="price-row">
-              <div><small>{{ t('common.from') }}</small><strong>{{ money(product.options?.[0]?.price_cents || product.base_price_cents, product.currency) }}</strong></div>
+              <div><small>{{ t('common.from') }}</small><strong>{{ displayMoney(product.options?.[0]?.price_cents || product.base_price_cents, product.currency, locale) }}</strong></div>
               <span>{{ product.deposit_percent }}% {{ t('common.deposit') }}</span>
             </div>
             <div class="card-actions">

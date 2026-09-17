@@ -2,7 +2,8 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { api, primarySupportContact, type Category, type Product, type SiteSettings, money } from '../api'
+import { api, primarySupportContact, type Category, type Product, type SiteSettings } from '../api'
+import { displayMoney } from '../currency'
 import { productFallbackImage, productImage, useProductImageFallback } from '../contentImages'
 import { setHead, setJsonLd } from '../head'
 
@@ -256,7 +257,7 @@ watch(locale, load)
               <div class="product-card-proof"><span>★★★★★</span><small>{{ t('detail.cardCycle') }}</small><small>{{ t('detail.cardHandmade') }}</small></div>
               <div class="tag-row compact"><span v-for="tag in product.tags?.slice(0, 6)" :key="tag">{{ tag }}</span></div>
               <div class="price-row">
-                <strong>{{ money(product.options?.[0]?.price_cents || product.base_price_cents, product.currency) }}</strong>
+                <strong>{{ displayMoney(product.options?.[0]?.price_cents || product.base_price_cents, product.currency, locale) }}</strong>
                 <span>{{ t('collections.deposit', { percent: product.deposit_percent }) }}</span>
               </div>
               <div class="card-actions">

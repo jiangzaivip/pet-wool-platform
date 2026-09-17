@@ -3,6 +3,7 @@
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { CURRENCY_BASE } from '../api-node/currency.mjs'
 
 const rootDir = process.env.PROJECT_ROOT_DIR
   ? path.resolve(process.env.PROJECT_ROOT_DIR)
@@ -75,10 +76,14 @@ const publishedProducts = Array.isArray(store?.products)
   ? store.products.filter((product) => String(product.status || 'published') !== 'hidden')
   : []
 const mismatchedProduct = publishedProducts.find((product) => (
-  String(product.currency || '').trim().toUpperCase() !== paypalCurrency
+  // Products are priced in the KRW store base; PayPal charges the converted
+  // site charge currency, so either currency is valid. Anything else cannot be
+  // converted reliably and would produce wrong checkout amounts.
+  String(product.currency || '').trim().toUpperCase() !== CURRENCY_BASE
+    && String(product.currency || '').trim().toUpperCase() !== paypalCurrency
 ))
-if (mismatchedProduct) fail(`published product currency does not match PayPal currency: ${mismatchedProduct.slug || mismatchedProduct.id}`)
-else if (publishedProducts.length) pass('published product currencies match PayPal')
+if (mismatchedProduct) fail(`published product currency must be ${CURRENCY_BASE} or the PayPal currency: ${mismatchedProduct.slug || mismatchedProduct.id}`)
+else if (publishedProducts.length) pass(`published product currencies are ${CURRENCY_BASE} or the PayPal charge currency`)
 else warn('no published products are present for payment currency validation')
 
 const baseUrl = process.env.PUBLIC_BASE_URL || ''

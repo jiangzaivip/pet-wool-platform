@@ -3,7 +3,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { ChevronLeft, ChevronRight, Check, X, ZoomIn } from '@lucide/vue'
-import { api, money, supportContacts, type Product, type SiteSettings, type ProductOption } from '../api'
+import { api, supportContacts, type Product, type SiteSettings, type ProductOption } from '../api'
+import { displayMoney, majorAmountString } from '../currency'
 import { productGallery, productImage, useProductImageFallback } from '../contentImages'
 import { setHead, setJsonLd } from '../head'
 
@@ -78,8 +79,8 @@ function updateProductStructuredData() {
     offers: {
       '@type': 'Offer',
       url: productUrl,
-      priceCurrency: current.currency || 'USD',
-      price: ((option?.price_cents || current.base_price_cents || 0) / 100).toFixed(2),
+      priceCurrency: current.currency || 'KRW',
+      price: majorAmountString(option?.price_cents || current.base_price_cents || 0, current.currency || 'KRW'),
       availability: 'https://schema.org/InStock',
       itemCondition: 'https://schema.org/NewCondition',
     },
@@ -176,7 +177,7 @@ function productSupportSummary(compact = false) {
     `${t('detail.supportProduct')} ${current.title || '-'}`,
     `${t('detail.supportOption')} ${selectedOption.value?.name || '-'}`,
     `${t('detail.supportPayment')} ${paymentType.value === 'full' ? t('detail.payFull') : t('detail.payDeposit')}`,
-    `${t('detail.supportAmount')} ${money(amount.value, current.currency)}`,
+    `${t('detail.supportAmount')} ${displayMoney(amount.value, current.currency, locale.value)}`,
     `${t('detail.supportPage')} ${window.location.href}`,
   ]
   if (!compact) {
@@ -256,7 +257,7 @@ watch(() => route.params.slug, load)
         <div class="detail-selectors">
           <label>{{ t('detail.option') }}
             <select v-model="selectedOptionId">
-              <option v-for="option in product.options" :key="option.id" :value="option.id">{{ option.name }} - {{ money(option.price_cents, product.currency) }}</option>
+              <option v-for="option in product.options" :key="option.id" :value="option.id">{{ option.name }} - {{ displayMoney(option.price_cents, product.currency, locale) }}</option>
             </select>
           </label>
           <label>{{ t('detail.payment') }}
@@ -268,9 +269,9 @@ watch(() => route.params.slug, load)
         </div>
         <div class="price-box-detail">
           <span>{{ t('detail.amountDue') }}</span>
-          <strong>{{ money(amount, product.currency) }}</strong>
+          <strong>{{ displayMoney(amount, product.currency, locale) }}</strong>
           <div class="price-breakdown">
-            <p><span>{{ t('detail.optionPrice') }}</span><strong>{{ money(baseAmount, product.currency) }}</strong></p>
+            <p><span>{{ t('detail.optionPrice') }}</span><strong>{{ displayMoney(baseAmount, product.currency, locale) }}</strong></p>
             <p><span>{{ t('detail.depositPercent') }}</span><strong>{{ product.deposit_percent }}%</strong></p>
           </div>
           <small>{{ t('detail.paymentHint') }}</small>
@@ -336,7 +337,7 @@ watch(() => route.params.slug, load)
             <p>{{ item.subtitle || item.description }}</p>
             <div class="product-card-proof"><span>★★★★★</span><small>{{ t('detail.cardCycle') }}</small><small>{{ t('detail.cardHandmade') }}</small></div>
             <div class="price-row">
-              <div><small>{{ t('common.from') }}</small><strong>{{ money(item.base_price_cents, item.currency) }}</strong></div>
+              <div><small>{{ t('common.from') }}</small><strong>{{ displayMoney(item.base_price_cents, item.currency, locale) }}</strong></div>
               <span>{{ t('detail.cardDeposit') }}</span>
             </div>
             <div class="card-actions">

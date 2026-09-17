@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ChevronLeft, ChevronRight, ImagePlus, Languages, Trash2, Upload, X, ZoomIn } from '@lucide/vue'
 import { api, money, safeGetLocalStorage, safeRemoveLocalStorage, upload, type Category, type Product, type SiteSettings, type Order } from '../api'
+import { CURRENCY_BASE } from '../currency'
 import { resolveContentImage } from '../contentImages'
 
 const { t } = useI18n()
@@ -410,7 +411,7 @@ const categoryI18n = reactive<Record<'zh' | 'en' | 'ko', { title: string; descri
   ko: { title: '', description: '' },
 })
 const productForm = reactive({
-  id: '', category_id: '', slug: '', title: '', subtitle: '', description: '', base_price_cents: 0, currency: 'CNY',
+  id: '', category_id: '', slug: '', title: '', subtitle: '', description: '', base_price_cents: 0, currency: CURRENCY_BASE,
   deposit_percent: 50, image_url: '', images_text: '', alt_text: '', seo_title: '', seo_description: '', use_cases_text: '', tags: '', options_text: t('admin.defaultOptionsText'), status: 'published'
 })
 const productI18n = reactive<Record<'zh' | 'en' | 'ko', { title: string; subtitle: string; description: string; alt_text: string; seo_title: string; seo_description: string; options_text: string }>>({
@@ -568,9 +569,13 @@ function productReadinessIssues(product: any) {
   const issues: string[] = []
   const category = categories.value.find((item) => item.id === product.category_id)
   const paypalCurrency = String(site.value.paypal?.currency || '').trim().toUpperCase()
+  const productCurrency = String(product.currency || '').trim().toUpperCase()
   if (product.status === 'published' && category?.status === 'hidden') issues.push(t('admin.productIssueHiddenCategory'))
-  if (product.status === 'published' && site.value.paypal?.enabled !== false && paypalCurrency && String(product.currency || '').trim().toUpperCase() !== paypalCurrency) {
-    issues.push(t('admin.productIssuePaypalCurrencyMismatch', { currency: paypalCurrency }))
+  // Products are priced in the KRW base and PayPal charges the converted site
+  // charge currency, so either currency is fine; anything else cannot be
+  // converted reliably and would block correct checkout amounts.
+  if (product.status === 'published' && site.value.paypal?.enabled !== false && productCurrency && productCurrency !== CURRENCY_BASE && productCurrency !== paypalCurrency) {
+    issues.push(t('admin.productIssuePaypalCurrencyMismatch', { currency: CURRENCY_BASE }))
   }
   if (!Array.isArray(product.options) || !product.options.length) issues.push(t('admin.productIssueMissingOptions'))
   if (!String(product.image_url || '').trim() && !product.images?.length) issues.push(t('admin.productIssueMissingImage'))
@@ -2785,7 +2790,7 @@ async function confirmDeleteCategory() {
 }
 
 function resetProductForm() {
-  Object.assign(productForm, { id: '', category_id: categories.value[0]?.id || '', slug: '', title: '', subtitle: '', description: '', base_price_cents: 0, currency: 'CNY', deposit_percent: 50, image_url: '', images_text: '', alt_text: '', seo_title: '', seo_description: '', use_cases_text: '', tags: '', options_text: t('admin.defaultOptionsText'), status: 'published' })
+  Object.assign(productForm, { id: '', category_id: categories.value[0]?.id || '', slug: '', title: '', subtitle: '', description: '', base_price_cents: 0, currency: CURRENCY_BASE, deposit_percent: 50, image_url: '', images_text: '', alt_text: '', seo_title: '', seo_description: '', use_cases_text: '', tags: '', options_text: t('admin.defaultOptionsText'), status: 'published' })
   for (const lang of adminLangs) {
     Object.assign(productI18n[lang], { title: '', subtitle: '', description: '', alt_text: '', seo_title: '', seo_description: '', options_text: '' })
   }

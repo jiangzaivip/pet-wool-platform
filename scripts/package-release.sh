@@ -15,13 +15,18 @@ RELEASE_FILES=(
   frontend/package.json
   frontend/package-lock.json
   frontend/dist
+  frontend/src/currency.ts
   api-node/server.mjs
+  api-node/currency.mjs
+  api-node/payment-amounts.mjs
   scripts/backup-data.mjs
   scripts/backup-sql.mjs
   scripts/cleanup-e2e-data.mjs
   scripts/cleanup-orphan-uploads.mjs
   scripts/export-store-postgres.mjs
   scripts/migrate-json-to-postgres.mjs
+  scripts/migrate-currency-krw.mjs
+  scripts/verify-multicurrency.mjs
   scripts/paypal-live-check.mjs
   scripts/production-check.mjs
   scripts/restore-data.mjs

@@ -204,6 +204,28 @@ npm run export:postgres
 
 输出文件为 `workspace/generated/store-postgres-seed.sql`，包含完整 JSON 快照和分类、商品、订单、支付、用户、审计日志、站点设置等 staging 表。该脚本是迁移准备工具，不会自动切换线上 API 数据源；生产迁库前仍需设计正式 schema、索引、备份和回滚步骤。
 
+## 多币种价格与 PayPal 收款
+
+商店价格以韩元（KRW）为基准币种存储；前台按站点语言显示对应币种：
+
+- 韩文(ko) → KRW（基准，原值显示）
+- 英文(en) → USD
+- 中文(zh) → CNY
+
+USD/CNY 均由 KRW 基准按 `api-node/currency.mjs` 中的固定汇率换算并四舍五入到最小货币单位（分）；换算使用整数运算，规则与 `frontend/src/currency.ts` 保持一致，`node --experimental-strip-types scripts/verify-multicurrency.mjs` 用于校验两侧表一致。调整汇率时必须同步修改两个文件、递增 `CURRENCY_RATE_VERSION`，重跑校验脚本后一起发布；否则新旧支付单会使用不同汇率口径。
+
+PayPal 无法以 KRW 收款，因此实际扣款始终使用站点配置的 PayPal 币种（当前为 USD）：支付单创建时服务端按同一固定汇率把订单基准金额换算成收款金额（支付记录同时保存 `base_amount_cents` 基准金额与 `amount_cents` 收款金额），捕获时按收款金额对账、按基准金额累计已付款。同币种、同汇率版本且历史已付款全部能由支付快照解释时，尾款按“整单换算 − 已收定金之和”分配取整差额；手工收款、旧数据或跨汇率版本的订单按本次应付额换算，实际支付快照为准。前台在下单摘要和账户支付面板会同时展示换算后的本地价格与 PayPal 实际收款金额。
+
+历史订单保留创建时的币种（USD/CNY），支付时同样按固定汇率换算成 PayPal 币种收款，无需迁移。如需把存量商品价格统一换算为 KRW 基准，可执行幂等脚本 `node scripts/migrate-currency-krw.mjs`（先 `--dry-run` 预览；脚本会自动备份 store.json）。
+
+当前固定业务汇率为 1 USD = 1,370 KRW、1 CNY = 203.5 KRW，不是实时市场报价，上线前应确认价格策略。`*_cents` 字段实际表示币种最小单位：KRW 是韩元整数，USD/CNY 是分，不能统一除以 100。
+
+PayPal 官方 REST 币种列表不支持 KRW；CNY 有境内账号限制，本项目仅开放 USD 收款，不把中文展示等同于 CNY 扣款。依据：https://developer.paypal.com/api/rest/reference/currency-codes/ 。买方使用 PayPal 或银行卡换汇时，实际本币扣账由支付机构汇率及费用决定，不保证等于网站的参考换算金额。
+
+服务端加载数据时会自动把支持的非 KRW 商品转换为 KRW（历史订单金额不转换），上线前必须备份实际使用的 JSON 或 PostgreSQL 数据，核对转换后的商品价格。手工迁移脚本仅针对 JSON，需停服后执行；不要对 PostgreSQL 部署的遗留 JSON 副本执行迁移。本次开发没有迁移或重启生产服务。
+
+回归验证入口：`npm run test:currency`（换算表一致性、隔离支付流程、重复捕获与重复 Webhook）。Webhook 测试仅在临时子进程模拟 PayPal 验签接口的成功/失败响应，不绕过生产验签，也不证明真实 PayPal 签名或真实扣款有效。测试使用临时目录，不接触真实数据或网络收款；真实 sandbox/live 支付验收须另行完成。
+
 ## PayPal Live 回归
 
 正式支付回归必须使用隐藏的小额商品或临时内部订单，不要把测试商品发布到前台：

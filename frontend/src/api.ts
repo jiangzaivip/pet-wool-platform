@@ -1,3 +1,5 @@
+import { formatMinorAmount } from './currency'
+
 export const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api'
 
 // This module is the single browser-side boundary for API calls, local session
@@ -276,19 +278,9 @@ export async function loginWithGoogle(site: SiteSettings = {}, email = '') {
   })
 }
 
-// Monetary values are stored in cents throughout the API. Intl.NumberFormat is
-// used only at the presentation boundary, with USD as a safe fallback for bad
-// or unsupported currency values.
-export function money(cents: number, currency = 'USD') {
-  const amount = Number.isFinite(Number(cents)) ? Number(cents) : 0
-  const normalizedCurrency = /^[A-Z]{3}$/.test(String(currency || '').trim().toUpperCase())
-    ? String(currency || '').trim().toUpperCase()
-    : 'USD'
-  try {
-    return new Intl.NumberFormat(undefined, { style: 'currency', currency: normalizedCurrency }).format(amount / 100)
-  } catch {
-    return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }).format(amount / 100)
-  }
+// Administration shows stored currency, not a language-dependent conversion.
+export function money(minor: number, currency = 'USD') {
+  return formatMinorAmount(Number(minor), currency)
 }
 
 // KakaoTalk and WhatsApp are fixed customer-inquiry entries with hardcoded

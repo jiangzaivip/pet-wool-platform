@@ -7,6 +7,24 @@ import { createWriteStream, existsSync, readFileSync } from 'node:fs'
 import pg from 'pg'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import {
+  CURRENCY_BASE,
+  convertMinorAmount,
+  normalizeSupportedCurrency,
+} from './currency.mjs'
+import {
+  capturedPaymentTransition,
+  orderInitialPayableAmount,
+  payableAmount,
+  payableType,
+  paymentAmountSnapshot,
+  paymentBaseAmountCents,
+  paypalChargeCurrencyReady,
+  singleCurrencyTotal,
+  validatePayableOrder,
+  validatePaymentSettlement,
+  validatePaypalCaptureAmount,
+} from './payment-amounts.mjs'
 
 const { Pool } = pg
 
@@ -1280,6 +1298,22 @@ function migrateStore(store) {
   const previousContact = JSON.stringify(store.site.contact || {})
   store.site = normalizeLegacySiteConfig(store.site)
   if (JSON.stringify(store.site.contact || {}) !== previousContact) changed = true
+  // Rebase product prices onto the KRW base currency (idempotent). Products
+  // stored in another supported currency are converted once, value-preservingly,
+  // through the shared fixed rate table; orders keep their historical currency.
+  for (const product of store.products) {
+    const from = normalizeSupportedCurrency(product.currency)
+    if (!from || from === CURRENCY_BASE) continue
+    const base = convertMinorAmount(product.base_price_cents, from, CURRENCY_BASE)
+    if (!base) continue
+    product.base_price_cents = base
+    for (const option of product.options || []) {
+      const converted = convertMinorAmount(option.price_cents, from, CURRENCY_BASE)
+      if (converted) option.price_cents = converted
+    }
+    product.currency = CURRENCY_BASE
+    changed = true
+  }
   store.products = store.products.map((product, index) => {
     const fallback = seeded.products[index] || seeded.products[0]
     const options = (product.options?.length ? product.options : fallback.options || []).map((option) => ({
@@ -1316,22 +1350,35 @@ function migrateStore(store) {
     const previousInitial = Number(order.initial_payment_cents || 0)
     const paymentType = String(order.payment_type || 'deposit')
     const depositPercent = Number(order.deposit_percent || product?.deposit_percent || 50)
+    // Historical orders keep the currency they were created with. Amounts are
+    // only resynced from the product while both sides use the same currency,
+    // so migrating product prices to the KRW base never rewrites old orders.
+    const currencyMatchesProduct = !product
+      || String(order.currency || '').trim().toUpperCase() === String(product.currency || '').trim().toUpperCase()
     if (!Number.isSafeInteger(Number(order.deposit_percent)) && product?.deposit_percent) {
       order.deposit_percent = Number(product.deposit_percent)
       changed = true
     }
     if (optionTotal > 0) {
-      if (!previousInitial) {
+      // Existing valid amount/initial snapshots are immutable: a later product
+      // price change must never reprice a recorded order. Only missing or
+      // self-inconsistent amounts are repaired from the current product price.
+      if (!previousInitial && Number.isSafeInteger(previousAmount) && previousAmount > 0) {
+        order.initial_payment_cents = paymentType === 'full' ? previousAmount
+          : Math.round(previousAmount * Math.min(100, Math.max(1, depositPercent)) / 100)
+        changed = true
+      } else if (!previousInitial && currencyMatchesProduct) {
         order.initial_payment_cents = paymentType === 'full'
           ? optionTotal
           : Math.round(optionTotal * Math.min(100, Math.max(1, depositPercent)) / 100)
         changed = true
       }
-      if (paymentType === 'deposit' && previousAmount > 0 && previousAmount < optionTotal) {
-        order.initial_payment_cents = previousInitial || previousAmount
-        order.amount_cents = optionTotal
-        changed = true
-      } else if (!previousAmount || previousAmount < Number(order.paid_amount_cents || 0)) {
+      if (!previousAmount) {
+        if (currencyMatchesProduct) {
+          order.amount_cents = optionTotal
+          changed = true
+        }
+      } else if (previousAmount < Number(order.paid_amount_cents || 0)) {
         order.amount_cents = Math.max(optionTotal, Number(order.paid_amount_cents || 0), previousAmount)
         changed = true
       }
@@ -1520,7 +1567,7 @@ function validateProductInput(input = {}, categories = []) {
   if (input.status && !['published', 'hidden'].includes(input.status)) return 'invalid publish status'
   if ((input.status || 'published') === 'published' && categories.some((category) => category.id === input.category_id && category.status === 'hidden')) return 'published product requires visible category'
   if (!String(input.title || input.translations?.zh?.title || '').trim()) return 'product title required'
-  if (!/^[A-Z]{3}$/.test(String(input.currency || '').trim())) return 'invalid currency'
+  if (String(input.currency || '').trim().toUpperCase() !== CURRENCY_BASE) return 'product currency must be KRW'
   if (!Number.isSafeInteger(basePrice) || basePrice <= 0) return 'price required'
   if (!Number.isSafeInteger(depositPercent) || depositPercent < 1 || depositPercent > 100) return 'invalid deposit percent'
   if (Array.isArray(input.images) && input.images.some((image) => !isValidProductImageReference(image))) return 'invalid image url'
@@ -1618,7 +1665,7 @@ function normalizeProductPayload(input = {}) {
     title: String(input.title || '').trim(),
     subtitle: String(input.subtitle || '').trim(),
     description: String(input.description || '').trim(),
-    currency: String(input.currency || 'CNY').trim().toUpperCase(),
+    currency: String(input.currency || CURRENCY_BASE).trim().toUpperCase(),
     base_price_cents: Number(input.base_price_cents),
     deposit_percent: Number(input.deposit_percent),
     image_url: String(input.image_url || '').trim(),
@@ -1661,7 +1708,9 @@ function validatePublicOrderInput(input = {}, product) {
 function isPublicOrderableProduct(product = {}, publicCategories = []) {
   return product.status !== 'hidden'
     && publicCategories.some((category) => category.id === product.category_id)
-    && /^[A-Z]{3}$/.test(String(product.currency || '').trim())
+    // The currency must be convertible through the shared rate table so the
+    // PayPal charge amount can always be derived from the stored price.
+    && Boolean(normalizeSupportedCurrency(product.currency))
     && Number.isSafeInteger(Number(product.base_price_cents)) && Number(product.base_price_cents) > 0
     && Number.isSafeInteger(Number(product.deposit_percent)) && Number(product.deposit_percent) > 0 && Number(product.deposit_percent) <= 100
     && Array.isArray(product.options)
@@ -1692,14 +1741,6 @@ function validateOrderTransition(order, input = {}, field = '') {
   if (['shipped', 'completed'].includes(nextOrderStatus) && (!nextCarrier || !nextTracking)) return 'shipping tracking required'
   if (field === 'payment' && ['shipped', 'completed'].includes(order.order_status) && nextPaymentStatus !== 'refunded' && nextPaymentStatus !== 'paid') return 'shipped or completed order payment cannot be downgraded'
   if (nextOrderStatus === 'cancelled' && ['paid', 'deposit_paid'].includes(effectivePaymentStatus)) return 'paid order cannot be cancelled before refund'
-  return ''
-}
-
-function validatePayableOrder(order = {}) {
-  if (order.order_status === 'cancelled') return 'cancelled order cannot be paid'
-  if (order.payment_status === 'refunded') return 'refunded order cannot be paid'
-  if (order.payment_status === 'paid') return 'order already paid'
-  if (order.payment_status === 'deposit_paid') return 'order already paid'
   return ''
 }
 
@@ -1981,7 +2022,7 @@ function validateSiteInput(input = {}, current = {}) {
   if (brand.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(brand.email).trim())) return 'valid brand email required'
   if (brand.instagram && !isValidPublicHttpUrl(brand.instagram)) return 'valid instagram URL required'
   if (merged.paypal?.mode && !['sandbox', 'live'].includes(String(merged.paypal.mode).trim().toLowerCase())) return 'invalid paypal mode'
-  if (paypal.currency && !paypalSupportedCurrencies.has(String(paypal.currency).trim().toUpperCase())) return 'invalid paypal currency'
+  if (paypal.currency && !paypalChargeCurrencyReady(paypal.currency)) return 'invalid paypal currency'
   if (String(paypal.clientId || '').length > 300 || String(paypal.secret || '').length > 500 || String(paypal.webhookId || '').length > 300) return 'invalid paypal config'
   if (paypalWebhookIdLooksLikeUrl(paypal.webhookId)) return 'paypal webhook id must not be url'
   if (paypal.mode === 'live' && (!paypal.clientId || !paypal.secret)) return 'paypal live credentials required'
@@ -2608,7 +2649,11 @@ async function sendSmtpMail({ to, subject, text }) {
 }
 
 function orderNotificationText(order = {}, event = {}) {
-  const amount = `${Number(event.amount_cents ?? order.paid_amount_cents ?? 0) / 100} ${order.currency || ''}`.trim()
+  const amountCurrency = String(order.currency || '').trim().toUpperCase()
+  const rawAmount = Number(event.amount_cents ?? order.paid_amount_cents ?? 0)
+  // Minor-unit aware: KRW amounts are whole won, others are cents.
+  const amountText = amountCurrency === 'KRW' ? String(Math.round(rawAmount)) : (rawAmount / 100).toFixed(2)
+  const amount = `${amountText} ${amountCurrency}`.trim()
   return [
     `WoolBuddy order ${order.order_no || order.id || ''}`,
     '',
@@ -2905,6 +2950,8 @@ function publicPayment(payment = {}) {
     paypal_order_id: payment.paypal_order_id,
     amount_cents: payment.amount_cents,
     currency: payment.currency,
+    base_amount_cents: payment.base_amount_cents || 0,
+    base_currency: payment.base_currency || '',
     status: payment.status,
   }
 }
@@ -2920,6 +2967,8 @@ function adminPayment(payment = {}) {
     paypal_capture_id: payment.paypal_capture_id || '',
     amount_cents: payment.amount_cents,
     currency: payment.currency,
+    base_amount_cents: payment.base_amount_cents || 0,
+    base_currency: payment.base_currency || '',
     status: payment.status,
     created_at: payment.created_at || '',
     paid_at: payment.paid_at || '',
@@ -3398,15 +3447,6 @@ function orderInitialPaymentAmount(product, optionId, paymentType) {
   return Math.round(total * Number(product.deposit_percent || 0) / 100)
 }
 
-function orderInitialPayableAmount(order = {}) {
-  if (Number.isSafeInteger(Number(order.initial_payment_cents)) && Number(order.initial_payment_cents) > 0) {
-    return Math.min(Number(order.initial_payment_cents), Number(order.amount_cents || 0))
-  }
-  if (order.payment_type === 'full') return Number(order.amount_cents || 0)
-  const percent = Number(order.deposit_percent || 50)
-  return Math.round(Number(order.amount_cents || 0) * Math.min(100, Math.max(1, percent)) / 100)
-}
-
 function isSamePublicOrderRequest(order = {}, input = {}) {
   const normalizedPhotos = (value) => Array.isArray(value) ? value.map((item) => String(item || '').trim()).filter(Boolean) : []
   return String(order.product_id || '') === String(input.product_id || '')
@@ -3420,18 +3460,6 @@ function isSamePublicOrderRequest(order = {}, input = {}) {
     && String(order.pet_type || '').trim() === String(input.pet_type || '').trim()
     && String(order.notes || '').trim() === String(input.notes || '').trim()
     && JSON.stringify(normalizedPhotos(order.photo_urls)) === JSON.stringify(normalizedPhotos(input.photo_urls))
-}
-
-function payableAmount(order = {}) {
-  if (order.payment_status === 'balance_due') {
-    return Math.max(0, Number(order.amount_cents || 0) - Number(order.paid_amount_cents || 0))
-  }
-  if (order.payment_status === 'unpaid') return orderInitialPayableAmount(order)
-  return Math.max(0, Number(order.amount_cents || 0) - Number(order.paid_amount_cents || 0))
-}
-
-function payableType(order = {}) {
-  return order.payment_status === 'balance_due' ? 'balance' : order.payment_type
 }
 
 function addOrderEvent(order, type, message, meta = {}) {
@@ -3478,6 +3506,13 @@ function paypalAmountToCents(value = 0, currency = defaultPaypalCurrency) {
     ? Math.round(amount)
     : Math.round(amount * 100)
 }
+
+// Payments carry two amounts: amount_cents is the PayPal charge (charge
+// currency, e.g. USD) and base_amount_cents is the same money in the order
+// currency (KRW base). Legacy payments only have amount_cents, which was also
+// the order currency back when the two had to match. The conversion between
+// the two (and all settlement validation) lives in payment-amounts.mjs so the
+// webhook path, the direct capture path, and tests share one implementation.
 
 function paypalConfig(site = {}) {
   const stored = site.paypal || {}
@@ -3735,7 +3770,7 @@ async function createRealPaypalOrder(req, store, order, payment, input = {}) {
   // PayPal-Request-Id must be unique for each payment intent. Reusing a
   // deterministic order-level ID can make retries fail with DUPLICATE_REQUEST_ID.
   const requestId = `create-${createHash('sha256')
-    .update(`${order.id}|${payment.id}|${payment.payment_type}|${payment.amount_cents}|${order.currency}`)
+    .update(`${order.id}|${payment.id}|${payment.payment_type}|${payment.amount_cents}|${payment.currency}`)
     .digest('hex')
     .slice(0, 24)}`
   log('info', 'integration.paypal_order_create_started', {
@@ -3745,7 +3780,7 @@ async function createRealPaypalOrder(req, store, order, payment, input = {}) {
     payment_id: payment.id,
     payment_type: payment.payment_type,
     amount_cents: payment.amount_cents,
-    currency: order.currency,
+    currency: payment.currency,
     paypal_mode: config.mode,
     paypal_api_base: config.apiBase,
     paypal_request_id: requestId,
@@ -3764,8 +3799,8 @@ async function createRealPaypalOrder(req, store, order, payment, input = {}) {
         custom_id: order.id,
         description: String(order.product_title || 'Custom pet portrait').slice(0, 127),
         amount: {
-          currency_code: order.currency,
-          value: centsToPaypalAmount(payment.amount_cents, order.currency),
+          currency_code: payment.currency,
+          value: centsToPaypalAmount(payment.amount_cents, payment.currency),
         },
       }],
       application_context: {
@@ -3882,19 +3917,9 @@ function paypalCaptureDetails(paypalOrder = {}) {
   }
 }
 
-function validatePaypalCaptureAmount(payment, capture = {}) {
-  if (!capture.currency && capture.amount_value == null) return ''
-  const captureCurrency = String(capture.currency || '').trim().toUpperCase()
-  if (captureCurrency && captureCurrency !== String(payment.currency || '').trim().toUpperCase()) return 'paypal currency mismatch'
-  if (capture.amount_value != null) {
-    const capturedCents = paypalAmountToCents(capture.amount_value, payment.currency)
-    if (capturedCents !== Number(payment.amount_cents || 0)) return 'paypal amount mismatch'
-  }
-  return ''
-}
-
 function applyCapturedPaypalPayment(order, payment, capture = {}) {
-  if (payment.status === 'captured') return
+  const transition = capturedPaymentTransition(order, payment, capture)
+  if (!transition) return false
   const previousPaymentStatus = order.payment_status
   const previousOrderStatus = order.order_status
   payment.status = 'captured'
@@ -3902,9 +3927,9 @@ function applyCapturedPaypalPayment(order, payment, capture = {}) {
   payment.paypal_status = capture.order_status || payment.paypal_status || 'COMPLETED'
   payment.paypal_capture_status = capture.capture_status || payment.paypal_capture_status || 'COMPLETED'
   payment.paid_at = capture.paid_at || payment.paid_at || now()
-  order.paid_amount_cents = Number(order.paid_amount_cents || 0) + Number(payment.amount_cents || 0)
-  order.payment_status = payment.payment_type === 'full' ? 'paid' : payment.payment_type === 'balance' ? 'paid' : 'deposit_paid'
-  order.order_status = payment.payment_type === 'balance' ? 'ready_ship' : 'confirmed'
+  // Track what the customer has settled in the order (base) currency, not the
+  // PayPal charge currency, so balances and reconciliation stay exact.
+  Object.assign(order, transition)
   if (previousPaymentStatus !== order.payment_status) {
     addOrderEvent(order, 'payment', `PayPal 付款状态 ${previousPaymentStatus || '-'} -> ${order.payment_status || '-'}`, {
       from: previousPaymentStatus,
@@ -3925,6 +3950,7 @@ function applyCapturedPaypalPayment(order, payment, capture = {}) {
     })
   }
   order.updated_at = now()
+  return true
 }
 
 async function verifyPaypalWebhook(req, site, event) {
@@ -4028,6 +4054,9 @@ async function applyPaypalWebhookEvent(store, event = {}) {
   if (!payment || payment.status === 'captured') return false
   const order = store.orders.find((item) => item.id === payment.order_id)
   if (!order) return false
+  // Validate in base units before an APPROVED webhook can trigger a charge.
+  const settlementError = validatePaymentSettlement(order, payment)
+  if (settlementError) throw Object.assign(new Error(settlementError), { status: 409 })
   const capture = eventType === 'CHECKOUT.ORDER.APPROVED'
     ? paypalCaptureDetails(await captureRealPaypalOrder(store, payment))
     : paypalCaptureFromWebhook(event)
@@ -4062,6 +4091,10 @@ function applyManualPaymentStatus(store, order, nextStatus) {
   }
   if (nextStatus === 'unpaid' || nextStatus === 'refunded') order.paid_amount_cents = 0
   if (['paid', 'deposit_paid', 'refunded'].includes(nextStatus) && previousStatus !== nextStatus) {
+    // Manual records are operational markers, not charge snapshots: they carry
+    // no exchange-rate version, so paymentBaseAmountCents() keeps the intent
+    // invariant required by the balance remainder allocation in
+    // paymentAmountSnapshot() and historical conversions stay per-installment.
     store.payments.unshift({
       id: id(),
       order_id: order.id,
@@ -4498,8 +4531,14 @@ async function handle(req, res) {
     const accessValidation = validateCustomerOrderAccess(req, order)
     if (accessValidation) return send(res, 403, { message: accessValidation }, privateNoStoreHeaders)
     const paypalCurrency = paypalConfig(store.site).currency
-    if (paypalCurrency && paypalCurrency !== String(order.currency || '').trim().toUpperCase()) {
-      return send(res, 409, { message: 'paypal currency mismatch' }, privateNoStoreHeaders)
+    // Orders are stored in the product currency (KRW base); the PayPal charge
+    // currency comes from the site config. Currencies only need to be
+    // convertible, not identical — the charge amount is converted below.
+    if (!normalizeSupportedCurrency(String(order.currency || '').trim().toUpperCase())) {
+      return send(res, 409, { message: 'unsupported order currency' }, privateNoStoreHeaders)
+    }
+    if (!paypalSupportedCurrencies.has(paypalCurrency) || !paypalChargeCurrencyReady(paypalCurrency)) {
+      return send(res, 503, { message: 'unsupported paypal currency' }, privateNoStoreHeaders)
     }
     const payableValidation = validatePayableOrder(order)
     if (payableValidation && order.payment_status !== 'paid') return send(res, 409, { message: payableValidation }, privateNoStoreHeaders)
@@ -4509,14 +4548,15 @@ async function handle(req, res) {
     }
     const paypalSettings = paypalConfig(store.site)
     const paymentType = payableType(order)
-    const expectedAmount = payableAmount(order)
+    const expectedBaseAmount = payableAmount(order)
+    const amountSnapshot = paymentAmountSnapshot(order, store.payments, paypalCurrency)
     const useMockPaypal = paypalShouldMock(paypalSettings)
     const existingPayment = store.payments.find((p) => p.order_id === order.id
       && p.provider === 'paypal'
       && p.status === 'created'
       && p.payment_type === paymentType
-      && Number(p.amount_cents || 0) === expectedAmount
-      && String(p.currency || '').trim().toUpperCase() === String(order.currency || '').trim().toUpperCase()
+      && paymentBaseAmountCents(p, order) === expectedBaseAmount
+      && String(p.currency || '').trim().toUpperCase() === String(paypalCurrency || '').trim().toUpperCase()
       && (useMockPaypal
         ? (p.paypal_mock === true || String(p.paypal_order_id || '').startsWith('PAYPAL-'))
         : (p.paypal_mock !== true && p.paypal_mode === paypalSettings.mode && !String(p.paypal_order_id || '').startsWith('PAYPAL-'))))
@@ -4554,8 +4594,7 @@ async function handle(req, res) {
       paypal_status: '',
       paypal_capture_status: '',
       paypal_mock: useMockPaypal,
-      amount_cents: expectedAmount,
-      currency: order.currency,
+      ...amountSnapshot,
       status: 'created',
       created_at: now(),
       paid_at: '',
@@ -4644,19 +4683,12 @@ async function handle(req, res) {
     const payableValidation = validatePayableOrder(order)
     if (payableValidation && order.payment_status !== 'paid') return send(res, 409, { message: payableValidation }, privateNoStoreHeaders)
     if (order.payment_status === 'paid') {
-      payment.status = 'captured'
-      payment.paid_at = payment.paid_at || now()
-      await saveStore(store)
-      return send(res, 200, { status: 'COMPLETED', payment: publicPayment(payment), order: publicOrder(order) }, privateNoStoreHeaders)
+      return send(res, 409, { message: 'order already paid' }, privateNoStoreHeaders)
     }
-    const expectedPaymentType = payableType(order)
-    const expectedPaymentAmount = payableAmount(order)
-    if (payment.payment_type !== expectedPaymentType || Number(payment.amount_cents || 0) !== expectedPaymentAmount) {
-      return send(res, 409, { message: 'payment no longer matches order' }, privateNoStoreHeaders)
-    }
-    if (Number(order.paid_amount_cents || 0) + Number(payment.amount_cents || 0) > Number(order.amount_cents || 0)) {
-      return send(res, 409, { message: 'payment would exceed order amount' }, privateNoStoreHeaders)
-    }
+    // Amounts are compared in the order (base) currency. The PayPal charge is
+    // a converted value stored alongside it on the payment record.
+    const settlementError = validatePaymentSettlement(order, payment)
+    if (settlementError) return send(res, 409, { message: settlementError }, privateNoStoreHeaders)
     let capture = {}
     if (payment.paypal_mock === true || String(payment.paypal_order_id || '').startsWith('PAYPAL-')) {
       capture = {
@@ -4718,7 +4750,7 @@ async function handle(req, res) {
     })
     queueOrderNotifications(order, {
       label: payment.payment_type === 'balance' ? 'Balance payment received' : 'Payment received',
-      amount_cents: payment.amount_cents,
+      amount_cents: paymentBaseAmountCents(payment, order),
     })
     return send(res, 200, { status: 'COMPLETED', payment: publicPayment(payment), order: publicOrder(order) }, privateNoStoreHeaders)
   }
@@ -4753,7 +4785,7 @@ async function handle(req, res) {
           || (paypalCaptureId && item.paypal_capture_id === paypalCaptureId)
         ))
         const order = payment ? store.orders.find((item) => item.id === payment.order_id) : null
-        if (order && payment) queueOrderNotifications(order, { label: 'Payment received', amount_cents: payment.amount_cents })
+        if (order && payment?.status === 'captured') queueOrderNotifications(order, { label: 'Payment received', amount_cents: paymentBaseAmountCents(payment, order) })
       }
       log('info', 'business.paypal_webhook_processed', {
         request_id: req.request_id,
@@ -4905,7 +4937,7 @@ async function handle(req, res) {
     if (paypalMockEnabled) {
       return send(res, 409, { message: 'paypal mock enabled' }, privateNoStoreHeaders)
     }
-    if (!paypalSupportedCurrencies.has(config.currency)) {
+    if (!paypalChargeCurrencyReady(config.currency)) {
       return send(res, 400, { message: 'invalid paypal currency' }, privateNoStoreHeaders)
     }
     if (!config.enabled) {

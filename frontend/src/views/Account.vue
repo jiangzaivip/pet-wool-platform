@@ -3,7 +3,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { ChevronLeft, ChevronRight, X, ZoomIn } from '@lucide/vue'
-import { api, clearUserSession, currentUser, loginWithGoogle, loginWithGoogleCredential, money, primarySupportContact, safeGetLocalStorage, safeSetLocalStorage, type Order, type SiteSettings } from '../api'
+import { api, clearUserSession, currentUser, loginWithGoogle, loginWithGoogleCredential, primarySupportContact, safeGetLocalStorage, safeSetLocalStorage, type Order, type SiteSettings } from '../api'
+import { displayMoney, displayMoneyBreakdown, formatMinorAmount } from '../currency'
 import GoogleSignInButton from '../components/GoogleSignInButton.vue'
 import { productFallbackImage } from '../contentImages'
 import { setHead } from '../head'
@@ -397,7 +398,7 @@ function orderSummary(order: Order) {
     `${t('account.detailContact')} ${supportTextValue(order.customer_name, 120)} / ${supportTextValue(order.email || user.value?.email, 160)} / ${supportTextValue(order.phone, 80)}`,
     order.shipping_address ? `${t('account.detailShippingAddress')} ${supportTextValue(order.country, 80)} ${supportTextValue(order.shipping_address, 260)}` : '',
     `${t('account.detailStatus')} ${statusText(order.order_status)} / ${statusText(order.payment_status)}`,
-    `${t('account.detailAmount')} ${money(order.amount_cents || 0, order.currency)} / ${t('account.paidAmount', { amount: money(order.paid_amount_cents || 0, order.currency) })} / ${t('account.remainingAmount', { amount: money(remainingAmount(order), order.currency) })}`,
+    `${t('account.detailAmount')} ${displayMoney(order.amount_cents || 0, order.currency, locale.value)} / ${t('account.paidAmount', { amount: displayMoney(order.paid_amount_cents || 0, order.currency, locale.value) })} / ${t('account.remainingAmount', { amount: displayMoneyBreakdown(order.amount_cents || 0, order.paid_amount_cents || 0, order.currency, locale.value).remaining })}`,
     `${t('account.detailPhotos')} ${t('account.photoCount', { count: order.photo_count ?? order.photo_urls?.length ?? 0 })}`,
     order.shipping_carrier || order.tracking_no ? `${t('account.detailTracking')} ${supportTextValue(order.shipping_carrier, 120)} ${supportTextValue(order.tracking_no, 120)}`.trim() : '',
     order.notes ? `${t('order.notes')} ${supportTextValue(order.notes, 500)}` : '',
@@ -408,7 +409,7 @@ function compactOrderSupportMessage(order: Order) {
   return [
     `${t('account.detailOrder')} ${supportTextValue(order.order_no, 80)}`,
     `${t('account.detailContact')} ${supportTextValue(order.email || user.value?.email, 160)} / ${supportTextValue(order.phone, 80)}`,
-    `${t('account.detailAmount')} ${money(order.amount_cents || 0, order.currency)} / ${t('account.remainingAmount', { amount: money(remainingAmount(order), order.currency) })}`,
+    `${t('account.detailAmount')} ${displayMoney(order.amount_cents || 0, order.currency, locale.value)} / ${t('account.remainingAmount', { amount: displayMoneyBreakdown(order.amount_cents || 0, order.paid_amount_cents || 0, order.currency, locale.value).remaining })}`,
     `${t('account.detailStatus')} ${statusText(order.order_status)} / ${statusText(order.payment_status)}`,
     `${t('account.supportPage')} ${window.location.href}`,
   ].join('\n')
@@ -578,12 +579,24 @@ async function captureApprovedAccountPaypalOrder(order: Order, paypalOrderId = p
   await loadOrders()
 }
 
+// Shows the exact PayPal charge on the inline payment panel when the display
+// currency differs from the charge currency (e.g. a Korean customer paying a
+// USD charge). The amount comes from the server-created payment record.
+function accountPaypalChargeNote(order: Order) {
+  const payment = pendingPaypal.value[order.id]?.payment
+  if (!payment) return ''
+  const chargeCurrency = String(payment.currency || 'USD').trim().toUpperCase()
+  return t('order.paypalChargeNote', {
+    amount: formatMinorAmount(Number(payment?.amount_cents || 0), chargeCurrency, locale.value),
+  })
+}
+
 async function renderAccountPaypalButtons(order: Order, paypalOrder = pendingPaypal.value[order.id]) {
   resetAccountPaypalButtons(order.id)
   if (!paypalOrder || paypalOrder.mock) return
   const clientId = String(site.value.paypal?.client_id || '').trim()
-  const currency = String(order.currency || site.value.paypal?.currency || 'USD').trim().toUpperCase()
-  if (!clientId) {
+  const currency = String(paypalOrder.payment?.currency || '').trim().toUpperCase()
+  if (!clientId || !currency) {
     setPaypalButtonError(order.id, t('account.paypalButtonError'))
     return
   }
@@ -859,10 +872,10 @@ watch(() => t('account.title'), setAccountHead)
             <p class="order-next-step">{{ nextStepText(order) }}</p>
           </div>
           <div>
-            {{ money(order.amount_cents, order.currency) }}<br>
+            {{ displayMoney(order.amount_cents, order.currency, locale) }}<br>
             <small>{{ statusText(order.payment_status) }}</small><br>
-            <small>{{ t('account.paidAmount', { amount: money(order.paid_amount_cents || 0, order.currency) }) }}</small><br>
-            <small>{{ t('account.remainingAmount', { amount: money(remainingAmount(order), order.currency) }) }}</small><br>
+            <small>{{ t('account.paidAmount', { amount: displayMoney(order.paid_amount_cents || 0, order.currency, locale) }) }}</small><br>
+            <small>{{ t('account.remainingAmount', { amount: displayMoneyBreakdown(order.amount_cents || 0, order.paid_amount_cents || 0, order.currency, locale).remaining }) }}</small><br>
             <small>{{ t(`order.${order.payment_type}`) }}</small><br>
             <small>{{ t('account.photoCount', { count: order.photo_count ?? order.photo_urls?.length ?? 0 }) }}</small>
           </div>
@@ -899,6 +912,7 @@ watch(() => t('account.title'), setAccountHead)
               <div>
                 <strong>{{ t('account.paypalInlineTitle') }}</strong>
                 <span>{{ t('account.paypalInlineDesc') }}</span>
+                <span v-if="accountPaypalChargeNote(order)" class="muted">{{ accountPaypalChargeNote(order) }}</span>
               </div>
               <div :id="paypalButtonContainerId(order)" class="paypal-button-host" data-account-paypal-buttons="true"></div>
               <div v-show="paypalCardEligible[order.id]" class="paypal-card-fields">
@@ -995,7 +1009,7 @@ watch(() => t('account.title'), setAccountHead)
               </div>
               <div class="account-detail-fact account-detail-fact--amount">
                 <dt>{{ t('account.detailAmount') }}</dt>
-                <dd>{{ money(order.amount_cents, order.currency) }} / {{ t(`order.${order.payment_type}`) }}<br>{{ t('account.paidAmount', { amount: money(order.paid_amount_cents || 0, order.currency) }) }} / {{ t('account.remainingAmount', { amount: money(remainingAmount(order), order.currency) }) }}</dd>
+                <dd>{{ displayMoney(order.amount_cents, order.currency, locale) }} / {{ t(`order.${order.payment_type}`) }}<br>{{ t('account.paidAmount', { amount: displayMoney(order.paid_amount_cents || 0, order.currency, locale) }) }} / {{ t('account.remainingAmount', { amount: displayMoneyBreakdown(order.amount_cents || 0, order.paid_amount_cents || 0, order.currency, locale).remaining }) }}</dd>
               </div>
               <div class="account-detail-fact">
                 <dt>{{ t('account.detailPhotos') }}</dt>
