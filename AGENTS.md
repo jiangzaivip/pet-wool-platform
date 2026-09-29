@@ -64,5 +64,6 @@ Pet wool-felt customization e-commerce site (宠物羊毛毡定制平台). Monor
 - Systemd drop-in dirs under `/etc/systemd/system/<unit>.service.d/` are ignored on this host; edit the unit file itself.
 - `deploy.sh` rolls back via `trap rollback EXIT`, not `ERR`: the health check ends in `exit 1`, which never fires an ERR trap. Do not "simplify" it back.
 - `assertProductionRuntime` only runs under `NODE_ENV=production`, so no local gate exercises it. Run `scripts/verify-production-start.mjs` on the deploy host; it is wired into deploy.sh for exactly this reason.
-- The release file list in `deploy.sh` is explicit — a new script is not deployed until it is added to `RELEASE_FILES`.
+- The release file list in `deploy.sh` is explicit — a new script is not deployed until it is added to `RELEASE_FILES`. `verify:core` now asserts every `api-node/*.mjs` appears there, because a missing module makes the remote API fail to boot, not degrade.
+- Verify scripts can pass a broken assertion and still exit 0 (a throw in `finally`). Never trust the exit code alone — read the output.
 - `.env` values already present in the process environment win over the file. Anything testing `.env` precedence must clear inherited vars first (`VERIFY_START_CLEAN_ENV=1`).
