@@ -2,18 +2,12 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import { createRouter, createWebHistory } from 'vue-router'
 import App from './App.vue'
+// Only the three primary-funnel views are imported eagerly; the rest are
+// reached through the lazy route factories below. Keeping a static import
+// here would pull that view back into the entry chunk and defeat the split.
 import Home from './views/Home.vue'
 import Collections from './views/Collections.vue'
 import ProductDetail from './views/ProductDetail.vue'
-import Order from './views/Order.vue'
-import AdminLogin from './views/AdminLogin.vue'
-import Account from './views/Account.vue'
-import Support from './views/Support.vue'
-import Blog from './views/Blog.vue'
-import BlogDetail from './views/BlogDetail.vue'
-import Docs from './views/Docs.vue'
-import NotFound from './views/NotFound.vue'
-import Legal from './views/Legal.vue'
 import { i18n } from './i18n'
 import { safeGetLocalStorage } from './api'
 import './style.css'
@@ -23,22 +17,26 @@ import './style.css'
 const router = createRouter({
   history: createWebHistory(),
   routes: [
+    // Home, Collections and ProductDetail stay eager: they are the entry points
+    // search engines and the first ad/session funnel land on, so a lazy chunk
+    // there would only add a round trip. Everything below the fold of the
+    // primary funnel is loaded on demand.
     { path: '/', component: Home },
     { path: '/collections', component: Collections },
     { path: '/collections/:category', component: Collections },
     { path: '/products/:slug', component: ProductDetail },
-    { path: '/support', component: Support },
-    { path: '/policies/:type', component: Legal },
-    { path: '/blog', component: Blog },
-    { path: '/blog/:slug', component: BlogDetail },
-    { path: '/doc', component: Docs },
-    { path: '/doc/', component: Docs },
-    { path: '/doc/:pathMatch(.*)*', component: Docs },
-    { path: '/order', component: Order },
-    { path: '/account', component: Account },
-    { path: '/admin', component: AdminLogin },
+    { path: '/support', component: () => import('./views/Support.vue') },
+    { path: '/policies/:type', component: () => import('./views/Legal.vue') },
+    { path: '/blog', component: () => import('./views/Blog.vue') },
+    { path: '/blog/:slug', component: () => import('./views/BlogDetail.vue') },
+    { path: '/doc', component: () => import('./views/Docs.vue') },
+    { path: '/doc/', component: () => import('./views/Docs.vue') },
+    { path: '/doc/:pathMatch(.*)*', component: () => import('./views/Docs.vue') },
+    { path: '/order', component: () => import('./views/Order.vue') },
+    { path: '/account', component: () => import('./views/Account.vue') },
+    { path: '/admin', component: () => import('./views/AdminLogin.vue') },
     { path: '/admin/dashboard', component: () => import('./views/AdminDashboard.vue') },
-    { path: '/:pathMatch(.*)*', component: NotFound }
+    { path: '/:pathMatch(.*)*', component: () => import('./views/NotFound.vue') }
   ]
 })
 

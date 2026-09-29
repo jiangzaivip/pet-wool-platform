@@ -2642,7 +2642,12 @@ const feedbackMessages: Record<string, Record<string, any>> = {
       viewProducts: '작품 보기',
       startOrder: '제작 시작하기',
       askSupport: '상담하기',
-      trustItems: ['100% 수제 제작', '제작 전 사진 확인', '완성 후 확인 배송', '해외 배송 지원'],
+      trustItems: [
+        { title: '✓ 100% 수제 제작', desc: '한 땀 한 땀 손으로 정성스럽게 제작합니다.' },
+        { title: '✓ 사진 그대로의 디테일', desc: '털의 색과 결, 표정까지 세심하게 표현합니다.' },
+        { title: '✓ 완성 전후 꼼꼼한 확인', desc: '제작 전 사진을 확인하고, 완성 후 고객님의 확인을 거쳐 배송합니다.' },
+        { title: '✓ 한국·해외 배송 지원', desc: '소중한 작품을 안전하게 포장하여 배송합니다.' }
+      ],
       reviewProductLabel: '관련 작품',
       handoffTitle: '주문 후 24시간 이내 요구사항 확인',
       handoffDesc: '제작 전 사진, 옵션, 결제 방식과 배송 정보를 함께 확인합니다.',
@@ -2658,12 +2663,6 @@ const feedbackMessages: Record<string, Record<string, any>> = {
       standardEyebrow: 'WoolBuddy의 약속',
       standardTitle: '왜 WoolBuddy인가요?',
       standardDesc: '한 장의 사진에서 시작해, 소중한 반려동물의 모습을\n특별한 작품으로 완성합니다.',
-      trustItems: [
-        { title: '✓ 100% 수제 제작', desc: '한 땀 한 땀 손으로 정성스럽게 제작합니다.' },
-        { title: '✓ 사진 그대로의 디테일', desc: '털의 색과 결, 표정까지 세심하게 표현합니다.' },
-        { title: '✓ 완성 전후 꼼꼼한 확인', desc: '제작 전 사진을 확인하고, 완성 후 고객님의 확인을 거쳐 배송합니다.' },
-        { title: '✓ 한국·해외 배송 지원', desc: '소중한 작품을 안전하게 포장하여 배송합니다.' }
-      ],
       standards: ['100% 수제 제작', '사진 기반 맞춤 제작', '제작 전 상담', '완성 후 확인 배송'],
       faqEyebrow: 'FAQ',
       faqTitle: '주문 전 자주 묻는 질문',

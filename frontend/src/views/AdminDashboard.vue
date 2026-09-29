@@ -609,14 +609,17 @@ function orderFulfillmentChecks(order: any) {
   ]
 }
 
-function statusText(value: string) {
-  return t(`status.${value}`)
+function statusText(value: string | undefined) {
+  const key = String(value || '').trim()
+  if (!key) return ''
+  return t(`status.${key}`)
 }
 
-function openOrderImage(order: any, index: number) {
+function openOrderImage(order: any, index: string | number) {
   const images = Array.isArray(order?.photo_urls) ? order.photo_urls : []
-  if (!images[index]) return
-  orderLightbox.value = { order, index }
+  const position = Number(index)
+  if (!images[position]) return
+  orderLightbox.value = { order, index: position }
 }
 
 function closeOrderLightbox() {
@@ -795,7 +798,7 @@ function copyLineValue(value: any, limit = 500) {
 function nextFollowupDate(user: any) {
   const followups = Array.isArray(user?.followups) ? user.followups : []
   const dates = followups
-    .map(item => String(item.next_at || '').trim())
+    .map((item: any) => String(item.next_at || '').trim())
     .filter(Boolean)
     .sort()
   return dates[0] || '-'
@@ -2498,11 +2501,13 @@ function validSiteImageReference(value: string) {
   return validHttpUrl(text) || validUploadUrl(text) || (text.startsWith('/assets/') && !text.includes('..') && !text.includes('\\'))
 }
 
-function photoKey(order: any, url: string, index: number) {
+// v-for indices arrive as `string | number` in templates, so accept both here;
+// the value is only interpolated into a cache key.
+function photoKey(order: any, url: string, index: string | number) {
   return `${order.id || order.order_no || 'order'}:${index}:${url}`
 }
 
-function markPhotoMissing(order: any, url: string, index: number) {
+function markPhotoMissing(order: any, url: string, index: string | number) {
   brokenPhotoKeys.value = new Set([...brokenPhotoKeys.value, photoKey(order, url, index)])
 }
 
@@ -4269,7 +4274,7 @@ watch([filteredBlogs, blogPageCount], () => { blogPage.value = clampPage(blogPag
             <small v-if="paypalWebhookSaved" class="secret-saved-note">{{ t('admin.paypalWebhookSavedHelp') }}</small>
             <small class="secret-saved-note">{{ t('admin.paypalWebhookIdHelp') }}</small>
           </div>
-          <label>{{ t('admin.currency') }}<input v-model="paymentForm.currency" placeholder="USD" maxlength="3" autocapitalize="characters" inputmode="latin" /></label>
+          <label>{{ t('admin.currency') }}<input v-model="paymentForm.currency" placeholder="USD" maxlength="3" autocapitalize="characters" inputmode="text" /></label>
         </div>
         <div class="paypal-webhook-note">
           <span>{{ t('admin.paypalWebhookUrl') }}</span>

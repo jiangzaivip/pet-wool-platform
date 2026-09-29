@@ -479,14 +479,15 @@ function toggleOrderDetail(order: Order) {
   expandedOrderId.value = expandedOrderId.value === order.id ? '' : order.id
 }
 
-function openPhotoLightbox(order: Order, index: number) {
+function openPhotoLightbox(order: Order, index: string | number) {
   const images = Array.isArray(order.photo_urls)
     ? order.photo_urls.filter((url: any) => Boolean(String(url || '').trim()))
     : []
   if (!images.length) return
+  const position = Number(index)
   photoLightbox.value = {
     order,
-    index: Math.min(Math.max(index, 0), images.length - 1),
+    index: Math.min(Math.max(position, 0), images.length - 1),
   }
 }
 
@@ -1041,11 +1042,11 @@ watch(() => t('account.title'), setAccountHead)
                   :key="`${photoUrl}-${index}`"
                   class="account-order-photo"
                   type="button"
-                  :aria-label="`${t('account.detailPhotos')} ${index + 1}`"
+                  :aria-label="`${t('account.detailPhotos')} ${Number(index) + 1}`"
                   @click="openPhotoLightbox(order, index)"
                 >
-                  <img :src="photoUrl" :alt="`${t('account.detailPhotos')} ${index + 1}`" loading="lazy" />
-                  <span class="account-order-photo-index">{{ index + 1 }}</span>
+                  <img :src="photoUrl" :alt="`${t('account.detailPhotos')} ${Number(index) + 1}`" loading="lazy" />
+                  <span class="account-order-photo-index">{{ Number(index) + 1 }}</span>
                   <span class="account-order-photo-zoom" aria-hidden="true"><ZoomIn :size="15" /></span>
                 </button>
               </div>
