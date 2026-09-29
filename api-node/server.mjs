@@ -1205,7 +1205,16 @@ function seedStore() {
   }
 }
 
-async function loadStore() {
+// The store is a single in-process object. Every request used to re-read and
+// re-parse the whole file, so two concurrent requests each mutated their own
+// snapshot and the later save silently discarded the earlier one — concurrent
+// checkouts returned N different order numbers while only one row persisted.
+// Reads now share one object, and mutations run inside withStore() so the
+// read-modify-write sequence is serialized end to end.
+let storeCache = null
+let storeCachePromise = null
+
+async function readStoreFromDisk() {
   await mkdir(dataDir, { recursive: true })
   await mkdir(uploadDir, { recursive: true })
   const pool = await ensurePostgresStore()
@@ -1220,28 +1229,59 @@ async function loadStore() {
   }
   if (!existsSync(dataFile)) await writeFile(dataFile, JSON.stringify(seedStore(), null, 2))
   const store = JSON.parse(await readFile(dataFile, 'utf8'))
-  if (pool) await saveStore(store)
+  if (pool) await writeStoreNow(store)
   return migrateStore(store)
 }
 
-async function saveStore(store) {
-  // Writes are serialized. PostgreSQL is authoritative in postgres mode, while
-  // store.json remains a local recovery/export shadow copy.
-  const write = async () => {
-    const pool = await ensurePostgresStore()
-    if (pool) {
-      await pool.query(`
-        INSERT INTO platform_runtime_store (id, data, updated_at)
-        VALUES (1, $1::jsonb, now())
-        ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()
-      `, [JSON.stringify(store)])
-    }
-    const tmpFile = `${dataFile}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`
-    await writeFile(tmpFile, JSON.stringify(store, null, 2))
-    await rename(tmpFile, dataFile)
+async function loadStore() {
+  if (storeCache) return storeCache
+  if (!storeCachePromise) {
+    storeCachePromise = readStoreFromDisk()
+      .then((store) => {
+        storeCache = store
+        return store
+      })
+      .finally(() => {
+        storeCachePromise = null
+      })
   }
-  saveQueue = saveQueue.then(write, write)
+  return storeCachePromise
+}
+
+async function writeStoreNow(store) {
+  // PostgreSQL is authoritative in postgres mode, while store.json remains a
+  // local recovery/export shadow copy.
+  const pool = await ensurePostgresStore()
+  if (pool) {
+    await pool.query(`
+      INSERT INTO platform_runtime_store (id, data, updated_at)
+      VALUES (1, $1::jsonb, now())
+      ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()
+    `, [JSON.stringify(store)])
+  }
+  const tmpFile = `${dataFile}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`
+  await writeFile(tmpFile, JSON.stringify(store, null, 2))
+  await rename(tmpFile, dataFile)
+}
+
+async function saveStore(store) {
+  storeCache = store
+  saveQueue = saveQueue.then(() => writeStoreNow(store), () => writeStoreNow(store))
   return saveQueue
+}
+
+// Serializes a read-modify-write cycle. Mutating handlers must run their body
+// here so concurrent requests cannot interleave on the shared store object.
+let mutationQueue = Promise.resolve()
+function withStore(mutate) {
+  const run = async () => {
+    const store = await loadStore()
+    const result = await mutate(store)
+    await saveStore(store)
+    return result
+  }
+  mutationQueue = mutationQueue.then(run, run)
+  return mutationQueue
 }
 
 function migrateStore(store) {

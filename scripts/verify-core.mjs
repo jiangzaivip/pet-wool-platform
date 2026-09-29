@@ -100,6 +100,45 @@ try {
   }
 } catch (e) { fail('static admin token rejected', e.message) }
 
+// --- 回归防护：并发下单必须全部落库 ---
+// store 曾经每请求独立读全量文件，saveStore 只串行化写，导致并发请求各自
+// 基于旧快照修改后互相覆盖：8 个并发下单会返回 8 个订单号但只落库 1 条。
+if (process.env.SKIP_BROWSER !== '1') {
+  const products = await (await get('/api/products?lang=zh')).json()
+  const items = products.data || products
+  const product = (Array.isArray(items) ? items : []).find((p) => (p.options || []).length > 0)
+  // Orders require a real upload reference, so mint a throwaway 1x1 PNG.
+  const pngBytes = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64'
+  )
+  const uploadProbe = await fetch(`${base}/api/uploads`, {
+    method: 'POST', headers: { 'content-type': 'image/png' }, body: pngBytes,
+  }).then((r) => r.json()).catch(() => null)
+  const uploadProbePath = uploadProbe && (uploadProbe.url || (uploadProbe.data && uploadProbe.data.url))
+  if (!product || !uploadProbePath) {
+    fail('concurrent orders persist', 'no orderable product or upload fixture available')
+  } else {
+    const stamp = Date.now()
+    const crid = `verify-race-${stamp}`
+    const build = () => ({
+      product_id: product.id, option_id: product.options[0].id, quantity: 1, payment_type: 'deposit',
+      customer_name: 'Concurrency Check', email: `verify-race-${stamp}@example.com`, country: 'US',
+      phone: '5550000000', shipping_address: 'Concurrency Check', pet_name: 'Rex', pet_type: 'dog',
+      photo_urls: [uploadProbePath], client_request_id: crid,
+    })
+    const responses = await Promise.all(Array.from({ length: 6 }, () => fetch(`${base}/api/orders`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(build()),
+    }).then((r) => r.json()).catch(() => null)))
+    const orderNos = [...new Set(responses.map((o) => o && o.order_no).filter(Boolean))]
+    if (orderNos.length === 1) {
+      ok(`concurrent orders share one idempotent order (${orderNos[0]})`)
+    } else {
+      fail('concurrent orders persist', `same client_request_id produced ${orderNos.length} distinct orders`)
+    }
+  }
+}
+
 // --- 管理端与备份（通过真实登录获取令牌） ---
 try {
   const loginRes = await fetch(`${base}/api/admin/login`, {
