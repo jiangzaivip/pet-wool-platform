@@ -3822,6 +3822,19 @@ function assertProductionRuntime(store = {}) {
   }
   const publicBaseUrl = String(process.env.PUBLIC_BASE_URL || '').trim()
   if (!/^https:\/\//i.test(publicBaseUrl)) throw new Error('PUBLIC_BASE_URL must use HTTPS in production')
+  // Demo login accepts any posted email and mints that customer's session, so a
+  // forgotten GOOGLE_DEMO_LOGIN is an account-takeover switch, not a dev aid.
+  if (googleDemoLoginEnabled) throw new Error('GOOGLE_DEMO_LOGIN must be false in production')
+  if (isDemoGoogleClientId(String((store.site || {}).google || {}).client_id || process.env.GOOGLE_CLIENT_ID || '')) {
+    throw new Error('a placeholder Google client ID cannot be used in production')
+  }
+  // The default admin password is published in the repo docs; refusing to start
+  // is the only reliable way to stop it reaching production.
+  if (adminPasswordHash === defaultAdminPasswordHash) throw new Error('default administrator password is still active in production')
+  // userTokenSecret falls back to the admin password hash, which would let
+  // anyone who knows the admin password forge a customer session offline.
+  if (String(userTokenSecret || '').trim().length < 32) throw new Error('USER_TOKEN_SECRET must be set to at least 32 characters in production')
+  if (userTokenSecret === adminPasswordHash) throw new Error('USER_TOKEN_SECRET must not reuse the administrator password hash')
 }
 
 function paypalBasicAuth(config = {}) {

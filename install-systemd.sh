@@ -45,6 +45,23 @@ ExecStart=${NODE_BIN} ${ROOT_DIR}/api-node/server.mjs
 Restart=always
 RestartSec=3
 
+# Hardening. The API only ever writes to its own data/upload/log paths, so the
+# rest of the filesystem can be read-only and the process cannot gain
+# privileges or see other users' files.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=${ROOT_DIR}/api-node/data ${ROOT_DIR}/api-node/uploads ${ROOT_DIR}/logs
+# Uploads are streamed with a hard size cap, but keep headroom for concurrency.
+LimitNOFILE=8192
+TasksMax=256
+
 [Install]
 WantedBy=multi-user.target
 SERVICE

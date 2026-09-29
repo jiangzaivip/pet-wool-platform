@@ -9,7 +9,8 @@
     "export:postgres": "node scripts/export-store-postgres.mjs",
     "production:check": "node scripts/production-check.mjs",
     "production:paypal-check": "node scripts/paypal-live-check.mjs",
-    "verify:core": "node scripts/verify-core.mjs"
+    "verify:core": "node scripts/verify-core.mjs",
+    "test:i18n": "node --experimental-strip-types scripts/verify-i18n.mjs"
   },
   "devDependencies": {
     "playwright": "^1.61.1"
