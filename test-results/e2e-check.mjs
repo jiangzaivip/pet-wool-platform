@@ -49,6 +49,26 @@ function ok(name, detail = '') {
 function fail(name, error) {
   out.push({ name, status: 'fail', detail: String(error?.message || error) })
 }
+// Admin access must go through the real login endpoint. A hardcoded static
+// token used to be accepted for loopback callers, which made every reverse
+// proxy in front of the API an open admin bypass; these tests now authenticate
+// like any other client. Override with E2E_ADMIN_EMAIL / E2E_ADMIN_PASSWORD
+// when the deployment no longer uses the development default admin.
+let adminTokenCache = ''
+async function adminToken() {
+  if (adminTokenCache) return adminTokenCache
+  const email = process.env.E2E_ADMIN_EMAIL || 'admin@example.com'
+  const password = process.env.E2E_ADMIN_PASSWORD || 'admin123456'
+  const res = await fetch(`${base}/api/admin/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok || !body.token) throw new Error(`admin login failed (${res.status}): ${body.message || 'no token'}`)
+  adminTokenCache = body.token
+  return adminTokenCache
+}
 function fullBackupHeaders(token) {
   return { authorization: `Bearer ${token}`, 'x-confirm-secret-backup': 'true' }
 }
@@ -107,7 +127,7 @@ async function expectNoPublicAuthorization(path, name) {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' })
   await page.addInitScript(() => localStorage.setItem('lang', 'zh'))
   const seen = []
-  await page.addInitScript(() => localStorage.setItem('admin_token', 'admin-e2e'))
+  await page.addInitScript(() => localStorage.setItem('admin_token', adminTokenCache))
   page.on('request', (request) => {
     const url = request.url()
     if (url.startsWith(`${base}/api/`) && !url.startsWith(`${base}/api/admin`)) {
@@ -171,7 +191,7 @@ async function restoreMissingPhotoSnapshot() {
   const expectedPhotoUrls = JSON.stringify(expectedOrder?.photo_urls || [])
   const started = Date.now()
   while (Date.now() - started < 10000) {
-    const current = await fetch(`${base}/api/admin/orders`, { headers: { authorization: 'Bearer admin-e2e' } })
+    const current = await fetch(`${base}/api/admin/orders`, { headers: { authorization: `Bearer ${adminTokenCache}` } })
       .then((res) => res.ok ? res.json() : [])
       .catch(() => [])
     const target = missingPhotoSnapshotOrderId
@@ -200,7 +220,7 @@ async function waitForSiteBrand(name) {
   const started = Date.now()
   let lastValue = null
   while (Date.now() - started < 10000) {
-    lastValue = await fetch(`${base}/api/admin/site`, { headers: { authorization: 'Bearer admin-e2e' } })
+    lastValue = await fetch(`${base}/api/admin/site`, { headers: { authorization: `Bearer ${adminTokenCache}` } })
       .then(async (res) => ({ status: res.status, body: await res.json() }))
       .catch((error) => ({ status: 0, body: { message: error.message } }))
     if (lastValue.status === 200 && lastValue.body?.brand?.name === name) return
@@ -211,7 +231,7 @@ async function waitForSiteBrand(name) {
 async function waitForContactState(talkEnabled, lineEnabled) {
   const started = Date.now()
   while (Date.now() - started < 10000) {
-    const site = await (await fetch(`${base}/api/admin/site`, { headers: { authorization: 'Bearer admin-e2e' } })).json()
+    const site = await (await fetch(`${base}/api/admin/site`, { headers: { authorization: `Bearer ${adminTokenCache}` } })).json()
     if (site.contact?.talk_enabled === talkEnabled && site.contact?.line_enabled === lineEnabled) return
     await new Promise(resolve => setTimeout(resolve, 250))
   }
@@ -220,7 +240,7 @@ async function waitForContactState(talkEnabled, lineEnabled) {
 async function waitForSiteSwitches({ talkEnabled, lineEnabled, paypalEnabled }) {
   const started = Date.now()
   while (Date.now() - started < 10000) {
-    const site = await (await fetch(`${base}/api/admin/site`, { headers: { authorization: 'Bearer admin-e2e' } })).json()
+    const site = await (await fetch(`${base}/api/admin/site`, { headers: { authorization: `Bearer ${adminTokenCache}` } })).json()
     if (
       site.contact?.talk_enabled === talkEnabled
       && site.contact?.line_enabled === lineEnabled
@@ -233,7 +253,7 @@ async function waitForSiteSwitches({ talkEnabled, lineEnabled, paypalEnabled }) 
 async function waitForPaypalCurrency(currency) {
   const started = Date.now()
   while (Date.now() - started < 10000) {
-    const site = await (await fetch(`${base}/api/admin/site`, { headers: { authorization: 'Bearer admin-e2e' } })).json()
+    const site = await (await fetch(`${base}/api/admin/site`, { headers: { authorization: `Bearer ${adminTokenCache}` } })).json()
     if (site.paypal?.enabled === true && site.paypal?.currency === currency) return
     await new Promise(resolve => setTimeout(resolve, 250))
   }
@@ -250,10 +270,10 @@ async function fetchJsonArray(url, options = {}, label = 'array response') {
   throw new Error(`${label} was not an array: ${JSON.stringify(lastValue)}`)
 }
 async function setSiteBrand(name) {
-  const site = await (await fetch(`${base}/api/admin/site`, { headers: { authorization: 'Bearer admin-e2e' } })).json()
+  const site = await (await fetch(`${base}/api/admin/site`, { headers: { authorization: `Bearer ${adminTokenCache}` } })).json()
   await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ ...site, brand: { ...(site.brand || {}), name } })
   })
   await waitForSiteBrand(name)
@@ -262,7 +282,7 @@ async function restoreOriginalSite() {
   if (!originalSiteSnapshot) return
   const res = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({
       brand: originalSiteSnapshot.brand,
       paypal: { ...(originalSiteSnapshot.paypal || {}), currency: 'USD' },
@@ -287,7 +307,7 @@ async function waitForPublicProduct(slug, title) {
 }
 
 async function ensureTemporaryProduct(categoryId) {
-  const products = await fetchJsonArray(`${base}/api/admin/products`, { headers: { authorization: 'Bearer admin-e2e' } }, 'admin products')
+  const products = await fetchJsonArray(`${base}/api/admin/products`, { headers: { authorization: `Bearer ${adminTokenCache}` } }, 'admin products')
   const existing = products.find((item) => item.slug === temporaryProductSlug)
   const payload = {
     ...(existing || {}),
@@ -316,7 +336,7 @@ async function ensureTemporaryProduct(categoryId) {
   if (existing) {
     const updateRes = await fetch(`${base}/api/admin/products/${existing.id}`, {
       method: 'PUT',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
       body: JSON.stringify(payload)
     })
     const updated = await updateRes.json()
@@ -326,7 +346,7 @@ async function ensureTemporaryProduct(categoryId) {
   }
   const productRes = await fetch(`${base}/api/admin/products`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify(payload)
   })
   const createdProduct = await productRes.json()
@@ -338,7 +358,7 @@ async function ensureTemporaryProduct(categoryId) {
 }
 
 async function ensurePaypalProduct(categoryId) {
-  const products = await fetchJsonArray(`${base}/api/admin/products`, { headers: { authorization: 'Bearer admin-e2e' } }, 'admin products')
+  const products = await fetchJsonArray(`${base}/api/admin/products`, { headers: { authorization: `Bearer ${adminTokenCache}` } }, 'admin products')
   const existing = products.find((item) => item.slug === paypalProductSlug)
   const payload = {
     ...(existing || {}),
@@ -369,7 +389,7 @@ async function ensurePaypalProduct(categoryId) {
   }
   const res = await fetch(existing ? `${base}/api/admin/products/${existing.id}` : `${base}/api/admin/products`, {
     method: existing ? 'PUT' : 'POST',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify(payload)
   })
   const product = await res.json()
@@ -378,7 +398,7 @@ async function ensurePaypalProduct(categoryId) {
 }
 
 async function ensureReadinessWarningProduct(categoryId) {
-  const products = await fetchJsonArray(`${base}/api/admin/products`, { headers: { authorization: 'Bearer admin-e2e' } }, 'admin products')
+  const products = await fetchJsonArray(`${base}/api/admin/products`, { headers: { authorization: `Bearer ${adminTokenCache}` } }, 'admin products')
   const existing = products.find((item) => item.slug === readinessProductSlug)
   const payload = {
     ...(existing || {}),
@@ -404,7 +424,7 @@ async function ensureReadinessWarningProduct(categoryId) {
   }
   const res = await fetch(existing?.id ? `${base}/api/admin/products/${existing.id}` : `${base}/api/admin/products`, {
     method: existing?.id ? 'PUT' : 'POST',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify(payload)
   })
   const product = await res.json()
@@ -413,14 +433,14 @@ async function ensureReadinessWarningProduct(categoryId) {
 }
 
 async function ensureHiddenProduct(categoryId) {
-  const products = await fetchJsonArray(`${base}/api/admin/products`, { headers: { authorization: 'Bearer admin-e2e' } }, 'admin products')
+  const products = await fetchJsonArray(`${base}/api/admin/products`, { headers: { authorization: `Bearer ${adminTokenCache}` } }, 'admin products')
   const existing = products.find((item) => item.slug === hiddenProductSlug)
   if (existing) {
     hiddenProductId = existing.id
     if (existing.status === 'hidden') return existing
     const hiddenRes = await fetch(`${base}/api/admin/products/${existing.id}`, {
       method: 'PUT',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
       body: JSON.stringify({ ...existing, status: 'hidden' })
     })
     const hiddenExisting = await hiddenRes.json()
@@ -429,7 +449,7 @@ async function ensureHiddenProduct(categoryId) {
   }
   const productRes = await fetch(`${base}/api/admin/products`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({
       category_id: categoryId,
       slug: hiddenProductSlug,
@@ -456,6 +476,9 @@ async function ensureHiddenProduct(categoryId) {
   hiddenProductId = product.id
   return product
 }
+
+// Authenticate before anything touches an admin endpoint or injects a token.
+await adminToken()
 
 const browser = await chromium.launch({ headless: true })
 const page = await browser.newPage({ viewport: { width: 1440, height: 1100 }, locale: 'zh-CN' })
@@ -696,23 +719,23 @@ try {
   const redactedRestoreFullBackup = await fetch(`${base}/api/admin/backup?secrets=1`, { headers: fullBackupHeaders(loginData.token) }).then((res) => res.json())
   if (redactedRestoreRes.ok && redactedRestoreFullBackup.data?.site?.paypal?.secret === restoreSecretProbe && redactedRestoreFullBackup.data?.site?.paypal?.webhook_id === restoreWebhookProbe) ok('admin site restore preserves redacted payment secrets')
   else throw new Error(`redacted site restore lost payment secrets: ${JSON.stringify(redactedRestoreFullBackup.data?.site?.paypal)}`)
-  const productsAfterSiteRestore = await fetchJsonArray(`${base}/api/admin/products`, { headers: { authorization: 'Bearer admin-e2e' } }, 'products after site restore')
+  const productsAfterSiteRestore = await fetchJsonArray(`${base}/api/admin/products`, { headers: { authorization: `Bearer ${adminTokenCache}` } }, 'products after site restore')
   if (productsAfterSiteRestore.length === backupProductCount) ok('admin site restore does not replace products')
   else throw new Error(`site restore changed products: ${backupProductCount} -> ${productsAfterSiteRestore.length}`)
   originalSiteSnapshot = restoredSite
   const paypalSecretProbe = `secret-${stamp}`
   await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ paypal: { client_id: `client-${stamp}`, secret: paypalSecretProbe, webhook_id: `webhook-${stamp}`, currency: 'USD' } })
   })
   await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ paypal: { currency: 'USD' } })
   })
-  const mergedSite = await fetch(`${base}/api/admin/site`, { headers: { authorization: 'Bearer admin-e2e' } }).then((res) => res.json())
-  const mergedFullBackup = await fetch(`${base}/api/admin/backup?secrets=1`, { headers: fullBackupHeaders('admin-e2e') }).then((res) => res.json())
+  const mergedSite = await fetch(`${base}/api/admin/site`, { headers: { authorization: `Bearer ${adminTokenCache}` } }).then((res) => res.json())
+  const mergedFullBackup = await fetch(`${base}/api/admin/backup?secrets=1`, { headers: fullBackupHeaders(adminTokenCache) }).then((res) => res.json())
   if (!('secret' in (mergedSite.paypal || {})) && mergedFullBackup.data?.site?.paypal?.secret === paypalSecretProbe && mergedFullBackup.data?.site?.paypal?.client_id === `client-${stamp}` && mergedSite.paypal?.currency === 'USD') ok('admin site partial paypal save preserves secrets')
   else throw new Error(`partial paypal save lost fields: ${JSON.stringify({ public: mergedSite.paypal, full: mergedFullBackup.data?.site?.paypal })}`)
   const customFaqQuestion = `商业化 FAQ ${stamp}`
@@ -809,7 +832,7 @@ try {
   else throw new Error(`public blog detail leaked internal fields: ${publicBlogDetailLeak.slice(0, 500)}`)
   await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ paypal: { enabled: false } })
   })
   try {
@@ -933,13 +956,13 @@ try {
   } finally {
     await fetch(`${base}/api/admin/site`, {
       method: 'PUT',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
       body: JSON.stringify({ paypal: { enabled: true } })
     })
   }
   await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ paypal: { enabled: true, currency: 'USD' } })
   })
   // Under the KRW-base model the order currency is always convertible and the
@@ -947,17 +970,17 @@ try {
   // verifies the admin API refuses any non-USD charge currency outright.
   const cnyCurrencyPutRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ paypal: { enabled: true, currency: 'CNY' } })
   })
   if (cnyCurrencyPutRes.status === 400) ok('admin site config rejects non-USD paypal charge currency')
   else throw new Error(`non-USD paypal charge currency accepted: ${cnyCurrencyPutRes.status}`)
   await waitForPaypalCurrency('USD')
-  const existingProducts = await fetchJsonArray(`${base}/api/admin/products`, { headers: { authorization: 'Bearer admin-e2e' } }, 'initial admin products')
+  const existingProducts = await fetchJsonArray(`${base}/api/admin/products`, { headers: { authorization: `Bearer ${adminTokenCache}` } }, 'initial admin products')
   for (const product of existingProducts.filter(item => String(item.slug || '').startsWith('commercial-check-'))) {
-    await fetch(`${base}/api/admin/products/${product.id}`, { method: 'DELETE', headers: { authorization: 'Bearer admin-e2e', 'x-confirm-delete': 'true' } }).catch(() => {})
+    await fetch(`${base}/api/admin/products/${product.id}`, { method: 'DELETE', headers: { authorization: `Bearer ${adminTokenCache}`, 'x-confirm-delete': 'true' } }).catch(() => {})
   }
-  const categoryRes = await fetch(`${base}/api/admin/categories`, { headers: { authorization: 'Bearer admin-e2e' } })
+  const categoryRes = await fetch(`${base}/api/admin/categories`, { headers: { authorization: `Bearer ${adminTokenCache}` } })
   const categoryData = await categoryRes.json()
   const categoryId = categoryData[0]?.id
   if (!categoryId) throw new Error('no category available for product create check')
@@ -1009,7 +1032,7 @@ try {
   const hiddenCategoryTitle = `隐藏分类 ${stamp}`
   const hiddenCategoryRes = await fetch(`${base}/api/admin/categories`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({
       slug: hiddenCategorySlug,
       title: hiddenCategoryTitle,
@@ -1028,7 +1051,7 @@ try {
   const normalizedCategorySlug = `normalized-category-${stamp}`
   const normalizedCategoryRes = await fetch(`${base}/api/admin/categories`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({
       slug: ` ${normalizedCategorySlug} `,
       title: `  规范分类 ${stamp}  `,
@@ -1047,12 +1070,12 @@ try {
     && normalizedCategory.status === 'published'
   ) ok('api normalizes admin category payload')
   else throw new Error(`admin category payload not normalized: ${normalizedCategoryRes.status} ${JSON.stringify(normalizedCategory)}`)
-  await fetch(`${base}/api/admin/categories/${normalizedCategory.id}`, { method: 'DELETE', headers: { authorization: 'Bearer admin-e2e', 'x-confirm-delete': 'true' } }).catch(() => {})
+  await fetch(`${base}/api/admin/categories/${normalizedCategory.id}`, { method: 'DELETE', headers: { authorization: `Bearer ${adminTokenCache}`, 'x-confirm-delete': 'true' } }).catch(() => {})
   const hiddenCategoryProductSlug = `hidden-category-product-${stamp}`
   const hiddenCategoryProductTitle = `隐藏分类商品 ${stamp}`
   const hiddenCategoryProductRes = await fetch(`${base}/api/admin/products`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({
       category_id: hiddenCategory.id,
       slug: hiddenCategoryProductSlug,
@@ -1636,7 +1659,7 @@ try {
   const noImageBlogTitle = `无图博客 ${stamp}`
   const noImageBlogRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({
       blog: [{
         id: noImageBlogSlug,
@@ -1662,7 +1685,7 @@ try {
   const brokenRemoteBlogImage = `https://example.com/broken-blog-${stamp}.jpg`
   const brokenImageBlogRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({
       blog: [{
         id: brokenImageBlogSlug,
@@ -1703,7 +1726,7 @@ try {
   await page.unroute(brokenRemoteBlogImage)
   await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ blog: originalSiteSnapshot.blog })
   })
   await page.goto(`${base}/blog`, { waitUntil: 'networkidle' })
@@ -1852,19 +1875,19 @@ try {
   await expectNoHorizontalOverflow(productDetailMissingPage, 'product detail missing mobile layout has no horizontal overflow')
   await productDetailMissingPage.close()
 
-  const productNoImageSource = await fetch(`${base}/api/admin/products`, { headers: { authorization: 'Bearer admin-e2e' } })
+  const productNoImageSource = await fetch(`${base}/api/admin/products`, { headers: { authorization: `Bearer ${adminTokenCache}` } })
     .then((res) => res.json())
     .then((items) => items.find((product) => product.id === temporaryProductId))
   const productNoImageCategory = categoryData.find((category) => category.id === productNoImageSource.category_id) || categoryData[0]
   const productNoImageRes = await fetch(`${base}/api/admin/products/${temporaryProductId}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ ...productNoImageSource, image_url: '', images: [], status: 'hidden' })
   })
   if (!productNoImageRes.ok) throw new Error(`product no-image setup failed: ${productNoImageRes.status}`)
   const publishedNoImageRes = await fetch(`${base}/api/admin/products/${temporaryProductId}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ ...productNoImageSource, image_url: '', images: [], status: 'published' })
   })
   if (publishedNoImageRes.status === 400) ok('api rejects publishing product without image')
@@ -1876,7 +1899,7 @@ try {
   else throw new Error(`hidden no-image product leaked publicly: ${noImagePublicCardCount}`)
   const restoreNoImageProductRes = await fetch(`${base}/api/admin/products/${temporaryProductId}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify(productNoImageSource)
   })
   if (!restoreNoImageProductRes.ok) throw new Error(`product no-image restore failed: ${restoreNoImageProductRes.status}`)
@@ -1886,7 +1909,7 @@ try {
   else throw new Error(`product detail no-image fallback missing: ${noImageProductDetailSrc}`)
   await fetch(`${base}/api/admin/products/${temporaryProductId}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify(productNoImageSource)
   })
 
@@ -2323,7 +2346,7 @@ try {
   else throw new Error(`overlong public order notes accepted: ${tooLongOrderNotesRes.status}`)
   const blockedUserRes = await fetch(`${base}/api/admin/users/blocked-${stamp}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ email: blockedEmail, name: 'Blocked E2E User', status: 'blocked', tags: [], internal_note: 'blocked user regression', followups: [] })
   })
   if (!blockedUserRes.ok) throw new Error(`blocked user setup failed: ${blockedUserRes.status}`)
@@ -2356,7 +2379,7 @@ try {
   const forgedUserOrdersRes = await fetch(`${base}/api/me/orders`, { headers: { authorization: `Bearer ${forgedUserToken}` } })
   if (forgedUserOrdersRes.status === 401) ok('api rejects forged customer token')
   else throw new Error(`forged customer token was accepted: ${forgedUserOrdersRes.status}`)
-  const adminTokenCustomerOrdersRes = await fetch(`${base}/api/me/orders`, { headers: { authorization: 'Bearer admin-e2e' } })
+  const adminTokenCustomerOrdersRes = await fetch(`${base}/api/me/orders`, { headers: { authorization: `Bearer ${adminTokenCache}` } })
   if (adminTokenCustomerOrdersRes.status === 401) ok('api rejects admin token on customer orders endpoint')
   else throw new Error(`admin token was accepted on customer orders endpoint: ${adminTokenCustomerOrdersRes.status}`)
   const expiredUserToken = signedCustomerToken({ email: testEmail, name: 'Expired User', avatar: '', provider: 'google', iat: Date.now() - 60_000, exp: Date.now() - 1_000 })
@@ -2464,7 +2487,7 @@ try {
   }).then((res) => res.json())
   const blockedPayUserRes = await fetch(`${base}/api/admin/users/blocked-pay-${stamp}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ email: blockedPayEmail, name: 'Blocked Pay User', status: 'blocked', tags: [], internal_note: 'blocked payment regression', followups: [] })
   })
   if (!blockedPayUserRes.ok) throw new Error(`blocked payment user setup failed: ${blockedPayUserRes.status}`)
@@ -2580,7 +2603,7 @@ try {
   })
   const normalizedOrder = await normalizedOrderRes.json()
   if (!normalizedOrderRes.ok) throw new Error(`normalized order create failed: ${normalizedOrderRes.status} ${JSON.stringify(normalizedOrder)}`)
-  const normalizedAdminOrders = await fetchJsonArray(`${base}/api/admin/orders`, { headers: { authorization: 'Bearer admin-e2e' } }, 'admin orders after normalized order')
+  const normalizedAdminOrders = await fetchJsonArray(`${base}/api/admin/orders`, { headers: { authorization: `Bearer ${adminTokenCache}` } }, 'admin orders after normalized order')
   const normalizedAdminOrder = normalizedAdminOrders.find((order) => order.id === normalizedOrder.id)
   if (
     normalizedAdminOrder?.email === normalizedOrderEmail
@@ -2606,7 +2629,7 @@ try {
     client_request_id: idempotentRequestId,
     lang: 'zh'
   }
-  const ordersBeforeIdempotent = await fetchJsonArray(`${base}/api/admin/orders`, { headers: { authorization: 'Bearer admin-e2e' } }, 'orders before idempotent submit')
+  const ordersBeforeIdempotent = await fetchJsonArray(`${base}/api/admin/orders`, { headers: { authorization: `Bearer ${adminTokenCache}` } }, 'orders before idempotent submit')
   const idempotentOne = await fetch(`${base}/api/orders`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -2617,7 +2640,7 @@ try {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(idempotentPayload)
   }).then((res) => res.json())
-  const ordersAfterIdempotent = await fetchJsonArray(`${base}/api/admin/orders`, { headers: { authorization: 'Bearer admin-e2e' } }, 'orders after idempotent submit')
+  const ordersAfterIdempotent = await fetchJsonArray(`${base}/api/admin/orders`, { headers: { authorization: `Bearer ${adminTokenCache}` } }, 'orders after idempotent submit')
   if (idempotentOne.id && idempotentOne.id === idempotentTwo.id && ordersAfterIdempotent.length === ordersBeforeIdempotent.length + 1) ok('api idempotent public order submit reuses existing order')
   else throw new Error(`idempotent submit failed: ${JSON.stringify({ first: idempotentOne, second: idempotentTwo, before: ordersBeforeIdempotent.length, after: ordersAfterIdempotent.length })}`)
   const idempotentConflictRes = await fetch(`${base}/api/orders`, {
@@ -2636,12 +2659,12 @@ try {
   })
   if (idempotentPetConflictRes.status === 409) ok('api rejects conflicting idempotent order details')
   else throw new Error(`conflicting idempotent order details were not rejected: ${idempotentPetConflictRes.status} ${await idempotentPetConflictRes.text()}`)
-  const ordersAfterIdempotentConflict = await fetchJsonArray(`${base}/api/admin/orders`, { headers: { authorization: 'Bearer admin-e2e' } }, 'orders after idempotent conflict')
+  const ordersAfterIdempotentConflict = await fetchJsonArray(`${base}/api/admin/orders`, { headers: { authorization: `Bearer ${adminTokenCache}` } }, 'orders after idempotent conflict')
   if (ordersAfterIdempotentConflict.length === ordersAfterIdempotent.length) ok('api conflicting idempotent submit does not create order')
   else throw new Error(`conflicting idempotent submit created an order: ${ordersAfterIdempotent.length} -> ${ordersAfterIdempotentConflict.length}`)
   const advanceUnpaidRes = await fetch(`${base}/api/admin/orders/${unpaidOrder.id}/status`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ order_status: 'crafting' })
   })
   if ([400, 404].includes(advanceUnpaidRes.status)) ok('api prevents unpaid order from advancing')
@@ -2655,21 +2678,21 @@ try {
   else throw new Error(`unauthorized order flag update accepted: ${unauthorizedFlagRes.status}`)
   const invalidStatusRes = await fetch(`${base}/api/admin/orders/${unpaidOrder.id}/status`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ order_status: 'ready_for_anything' })
   })
   if (invalidStatusRes.status === 400) ok('api rejects invalid order status')
   else throw new Error(`invalid order status accepted: ${invalidStatusRes.status}`)
   const invalidPaymentRes = await fetch(`${base}/api/admin/orders/${unpaidOrder.id}/payment`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ payment_status: 'maybe_paid' })
   })
   if (invalidPaymentRes.status === 400) ok('api rejects invalid payment status')
   else throw new Error(`invalid payment status accepted: ${invalidPaymentRes.status}`)
   const unpaidBalanceDueRes = await fetch(`${base}/api/admin/orders/${unpaidOrder.id}/payment`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ payment_status: 'balance_due' })
   })
   if (unpaidBalanceDueRes.status === 400) ok('api blocks balance due before deposit is paid')
@@ -2695,13 +2718,13 @@ try {
   if (!manualPaidOrderRes.ok) throw new Error(`manual paid order create failed: ${manualPaidOrderRes.status} ${JSON.stringify(manualPaidOrder)}`)
   const manualPaidRes = await fetch(`${base}/api/admin/orders/${manualPaidOrder.id}/payment`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ payment_status: 'paid' })
   })
   const manualPaidUpdated = await manualPaidRes.json()
   if (manualPaidRes.ok && manualPaidUpdated.payment_status === 'paid' && manualPaidUpdated.paid_amount_cents === manualPaidUpdated.amount_cents) ok('admin manual paid status syncs paid amount')
   else throw new Error(`manual paid status did not sync amount: ${manualPaidRes.status} ${JSON.stringify(manualPaidUpdated)}`)
-  const manualBackup = await fetch(`${base}/api/admin/backup`, { headers: { authorization: 'Bearer admin-e2e' } }).then((res) => res.json())
+  const manualBackup = await fetch(`${base}/api/admin/backup`, { headers: { authorization: `Bearer ${adminTokenCache}` } }).then((res) => res.json())
   const manualPayment = manualBackup.data?.payments?.find((payment) => payment.order_id === manualPaidOrder.id && payment.provider === 'manual' && payment.status === 'captured')
   if (manualPayment) ok('admin manual paid status records payment audit')
   else throw new Error(`manual payment audit missing: ${JSON.stringify(manualBackup.data?.payments?.slice(0, 3))}`)
@@ -2734,111 +2757,111 @@ try {
   if (!manualRefundOrderRes.ok) throw new Error(`manual refund order create failed: ${manualRefundOrderRes.status} ${JSON.stringify(manualRefundOrder)}`)
   const manualRefundPaidRes = await fetch(`${base}/api/admin/orders/${manualRefundOrder.id}/payment`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ payment_status: 'paid' })
   })
   const manualRefundPaidOrder = await manualRefundPaidRes.json()
   if (!manualRefundPaidRes.ok) throw new Error(`manual refund order could not be marked paid: ${manualRefundPaidRes.status}`)
   const refundPaidRes = await fetch(`${base}/api/admin/orders/${manualRefundOrder.id}/payment`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ payment_status: 'refunded' })
   })
   const refundPaidOrder = await refundPaidRes.json()
   if (refundPaidRes.ok && refundPaidOrder.payment_status === 'refunded' && refundPaidOrder.paid_amount_cents === 0) ok('admin refund clears paid amount')
   else throw new Error(`manual refund did not clear paid amount: ${refundPaidRes.status} ${JSON.stringify(refundPaidOrder)}`)
-  const refundBackup = await fetch(`${base}/api/admin/backup`, { headers: { authorization: 'Bearer admin-e2e' } }).then((res) => res.json())
+  const refundBackup = await fetch(`${base}/api/admin/backup`, { headers: { authorization: `Bearer ${adminTokenCache}` } }).then((res) => res.json())
   const refundPayment = refundBackup.data?.payments?.find((payment) => payment.order_id === manualRefundOrder.id && payment.provider === 'manual' && payment.status === 'refunded')
   if (refundPayment?.amount_cents === manualRefundPaidOrder.amount_cents) ok('admin refund records previous paid amount')
   else throw new Error(`manual refund audit amount invalid: ${JSON.stringify(refundPayment)}`)
   const refundAdvanceRes = await fetch(`${base}/api/admin/orders/${manualRefundOrder.id}/status`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ order_status: 'crafting' })
   })
   if (refundAdvanceRes.status === 400) ok('api blocks refunded order from advancing')
   else throw new Error(`refunded order advanced unexpectedly: ${refundAdvanceRes.status}`)
   const refundedReopenRes = await fetch(`${base}/api/admin/orders/${manualRefundOrder.id}/status`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ order_status: 'confirmed' })
   })
   if (refundedReopenRes.status === 400) ok('api blocks refunded order from reopening into workflow')
   else throw new Error(`refunded order reopened unexpectedly: ${refundedReopenRes.status}`)
   const manualShipRes = await fetch(`${base}/api/admin/orders/${manualPaidOrder.id}/status`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ order_status: 'shipped' })
   })
   if (manualShipRes.status === 400) ok('api requires tracking before shipping paid order')
   else throw new Error(`manual paid order shipped without tracking: ${manualShipRes.status}`)
-  const manualPaidTracked = await fetch(`${base}/api/admin/orders/${manualPaidOrder.id}`, { headers: { authorization: 'Bearer admin-e2e' } }).then((res) => res.json())
+  const manualPaidTracked = await fetch(`${base}/api/admin/orders/${manualPaidOrder.id}`, { headers: { authorization: `Bearer ${adminTokenCache}` } }).then((res) => res.json())
   const manualTrackingRes = await fetch(`${base}/api/admin/orders/${manualPaidOrder.id}/note`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ internal_note: manualPaidTracked.internal_note || '', shipping_carrier: 'DHL', tracking_no: `SHIP-${stamp}`, updated_at: manualPaidTracked.updated_at })
   })
   if (!manualTrackingRes.ok) throw new Error(`manual paid order tracking setup failed: ${manualTrackingRes.status}`)
   const manualShipWithTrackingRes = await fetch(`${base}/api/admin/orders/${manualPaidOrder.id}/status`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ order_status: 'shipped' })
   })
   if (!manualShipWithTrackingRes.ok) throw new Error(`manual paid order could not ship with tracking: ${manualShipWithTrackingRes.status}`)
   const downgradeShippedPaymentRes = await fetch(`${base}/api/admin/orders/${manualPaidOrder.id}/payment`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ payment_status: 'unpaid' })
   })
   if (downgradeShippedPaymentRes.status === 400) ok('api blocks shipped order payment downgrade')
   else throw new Error(`shipped order payment downgrade accepted: ${downgradeShippedPaymentRes.status}`)
   const completePaidOrderRes = await fetch(`${base}/api/admin/orders/${manualPaidOrder.id}/status`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ order_status: 'completed' })
   })
   if (!completePaidOrderRes.ok) throw new Error(`manual paid order could not complete: ${completePaidOrderRes.status}`)
   const reopenCompletedOrderRes = await fetch(`${base}/api/admin/orders/${manualPaidOrder.id}/status`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ order_status: 'crafting' })
   })
   if (reopenCompletedOrderRes.status === 400) ok('api blocks completed order from reopening')
   else throw new Error(`completed order reopened unexpectedly: ${reopenCompletedOrderRes.status}`)
-  const productForPublishCheck = await fetch(`${base}/api/admin/products`, { headers: { authorization: 'Bearer admin-e2e' } })
+  const productForPublishCheck = await fetch(`${base}/api/admin/products`, { headers: { authorization: `Bearer ${adminTokenCache}` } })
     .then((res) => res.json())
     .then((items) => items.find((product) => product.id === temporaryProductId))
   const invalidProductPublishRes = await fetch(`${base}/api/admin/products/${productForPublishCheck.id}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ ...productForPublishCheck, status: 'archived' })
   })
   if (invalidProductPublishRes.status === 400) ok('api rejects invalid product publish status')
   else throw new Error(`invalid product publish status accepted: ${invalidProductPublishRes.status}`)
   const invalidProductPriceRes = await fetch(`${base}/api/admin/products/${productForPublishCheck.id}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ ...productForPublishCheck, base_price_cents: 1200.5 })
   })
   if (invalidProductPriceRes.status === 400) ok('api rejects non-integer product price')
   else throw new Error(`non-integer product price accepted: ${invalidProductPriceRes.status}`)
   const invalidProductDepositRes = await fetch(`${base}/api/admin/products/${productForPublishCheck.id}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ ...productForPublishCheck, deposit_percent: 50.5 })
   })
   if (invalidProductDepositRes.status === 400) ok('api rejects non-integer deposit percent')
   else throw new Error(`non-integer deposit percent accepted: ${invalidProductDepositRes.status}`)
   const invalidProductCurrencyRes = await fetch(`${base}/api/admin/products/${productForPublishCheck.id}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ ...productForPublishCheck, currency: 'CNY1' })
   })
   if (invalidProductCurrencyRes.status === 400) ok('api rejects invalid product currency')
   else throw new Error(`invalid product currency accepted: ${invalidProductCurrencyRes.status}`)
   const invalidProductImageRes = await fetch(`${base}/api/admin/products/${productForPublishCheck.id}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ ...productForPublishCheck, image_url: 'not-a-url', images: ['not-a-url'] })
   })
   if (invalidProductImageRes.status === 400) ok('api rejects invalid product image url')
@@ -2846,7 +2869,7 @@ try {
   const localProductImageUrl = uploadedPhotoUrl
   const localProductImageRes = await fetch(`${base}/api/admin/products/${productForPublishCheck.id}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ ...productForPublishCheck, image_url: localProductImageUrl, images: [localProductImageUrl], status: 'published' })
   })
   const localProductImage = await localProductImageRes.json()
@@ -2854,21 +2877,21 @@ try {
   else throw new Error(`local uploaded product image was rejected: ${localProductImageRes.status} ${JSON.stringify(localProductImage).slice(0, 300)}`)
   const badLocalProductImageRes = await fetch(`${base}/api/admin/products/${productForPublishCheck.id}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ ...productForPublishCheck, image_url: '/uploads/not-a-generated-name.png', images: ['/uploads/not-a-generated-name.png'] })
   })
   if (badLocalProductImageRes.status === 400) ok('api rejects malformed local product image references')
   else throw new Error(`malformed local product image accepted: ${badLocalProductImageRes.status}`)
   const missingSeoTitleProductRes = await fetch(`${base}/api/admin/products/${productForPublishCheck.id}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ ...productForPublishCheck, status: 'published', seo_title: '', translations: { ...(productForPublishCheck.translations || {}), zh: { ...(productForPublishCheck.translations?.zh || {}), seo_title: '' } } })
   })
   if (missingSeoTitleProductRes.status === 400) ok('api rejects published product without seo title')
   else throw new Error(`published product without seo title accepted: ${missingSeoTitleProductRes.status}`)
   const missingSeoDescProductRes = await fetch(`${base}/api/admin/products/${productForPublishCheck.id}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ ...productForPublishCheck, status: 'published', seo_description: '', translations: { ...(productForPublishCheck.translations || {}), zh: { ...(productForPublishCheck.translations?.zh || {}), seo_description: '' } } })
   })
   if (missingSeoDescProductRes.status === 400) ok('api rejects published product without seo description')
@@ -2876,7 +2899,7 @@ try {
   const optionBackfillSlug = `option-backfill-${stamp}`
   const optionIdBackfillRes = await fetch(`${base}/api/admin/products`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({
       ...productForPublishCheck,
       slug: optionBackfillSlug,
@@ -2890,7 +2913,7 @@ try {
   const optionIdBackfillProduct = await optionIdBackfillRes.json()
   if (optionIdBackfillRes.ok && optionIdBackfillProduct.options?.[0]?.id) ok('api backfills product option ids')
   else throw new Error(`product option id was not backfilled: ${optionIdBackfillRes.status} ${JSON.stringify(optionIdBackfillProduct.options)}`)
-  await fetch(`${base}/api/admin/products/${optionIdBackfillProduct.id}`, { method: 'DELETE', headers: { authorization: 'Bearer admin-e2e', 'x-confirm-delete': 'true' } }).catch(() => {})
+  await fetch(`${base}/api/admin/products/${optionIdBackfillProduct.id}`, { method: 'DELETE', headers: { authorization: `Bearer ${adminTokenCache}`, 'x-confirm-delete': 'true' } }).catch(() => {})
   const multiImageProduct = {
     ...productForPublishCheck,
     image_url: 'https://images.unsplash.com/photo-1548199973-03cce0bbc87b?auto=format&fit=crop&w=900&q=82',
@@ -2901,7 +2924,7 @@ try {
   }
   const multiImageSetupRes = await fetch(`${base}/api/admin/products/${productForPublishCheck.id}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify(multiImageProduct)
   })
   if (!multiImageSetupRes.ok) throw new Error(`multi-image product setup failed: ${multiImageSetupRes.status}`)
@@ -2911,7 +2934,7 @@ try {
   const productAltText = `商业化图片 Alt ${stamp}`
   const productSeoRes = await fetch(`${base}/api/admin/products/${productForPublishCheck.id}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({
       ...productForPublishCheck,
       alt_text: productAltText,
@@ -2933,7 +2956,7 @@ try {
   const publicSeoProduct = await fetch(`${base}/api/products/${productForPublishCheck.slug}?lang=zh`).then((res) => res.json())
   if (publicSeoProduct.seo_title === productSeoTitle && publicSeoProduct.alt_text === productAltText && publicSeoProduct.use_cases?.includes('商业化礼物')) ok('admin product SEO and merchandising fields persist to public detail')
   else throw new Error(`product SEO fields missing publicly: ${JSON.stringify({ seo_title: publicSeoProduct.seo_title, alt_text: publicSeoProduct.alt_text, use_cases: publicSeoProduct.use_cases })}`)
-  const productAfterSeoSave = await fetch(`${base}/api/admin/products`, { headers: { authorization: 'Bearer admin-e2e' } })
+  const productAfterSeoSave = await fetch(`${base}/api/admin/products`, { headers: { authorization: `Bearer ${adminTokenCache}` } })
     .then((res) => res.json())
     .then((items) => items.find((product) => product.id === productForPublishCheck.id))
   if (productAfterSeoSave.images?.length === 2 && productAfterSeoSave.images[1] === multiImageProduct.images[1]) ok('admin product save preserves existing gallery images')
@@ -2968,16 +2991,16 @@ try {
   if (!usdOrderRes.ok) throw new Error(`temporary USD order failed: ${usdOrderRes.status} ${JSON.stringify(usdOrder)}`)
   const paidUsdOrderRes = await fetch(`${base}/api/admin/orders/${usdOrder.id}/payment`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ payment_status: 'paid' })
   })
   const paidUsdOrder = await paidUsdOrderRes.json()
   if (!paidUsdOrderRes.ok) throw new Error(`temporary USD order paid failed: ${paidUsdOrderRes.status} ${JSON.stringify(paidUsdOrder)}`)
-  const multiCurrencyUsers = await fetchJsonArray(`${base}/api/admin/users`, { headers: { authorization: 'Bearer admin-e2e' } }, 'admin users after USD order')
+  const multiCurrencyUsers = await fetchJsonArray(`${base}/api/admin/users`, { headers: { authorization: `Bearer ${adminTokenCache}` } }, 'admin users after USD order')
   const multiCurrencyUser = multiCurrencyUsers.find((user) => String(user.email || '').toLowerCase() === multiCurrencyUserEmail)
   if (multiCurrencyUser?.paid_by_currency?.KRW === paidUsdOrder.amount_cents) ok('admin user metrics group paid amount by currency')
   else throw new Error(`admin user paid_by_currency invalid: ${JSON.stringify(multiCurrencyUser)}`)
-  const multiCurrencyOverview = await fetch(`${base}/api/admin/overview`, { headers: { authorization: 'Bearer admin-e2e' } }).then((res) => res.json())
+  const multiCurrencyOverview = await fetch(`${base}/api/admin/overview`, { headers: { authorization: `Bearer ${adminTokenCache}` } }).then((res) => res.json())
   if (multiCurrencyOverview.revenue_by_currency?.KRW >= paidUsdOrder.amount_cents) ok('admin overview groups revenue by currency')
   else throw new Error(`admin overview revenue_by_currency invalid: ${JSON.stringify(multiCurrencyOverview)}`)
   const refundedCurrencyEmail = `multi-currency-refund-${stamp}@example.com`
@@ -3001,30 +3024,30 @@ try {
   if (!refundMetricOrderRes.ok) throw new Error(`temporary refund metric order failed: ${refundMetricOrderRes.status} ${JSON.stringify(refundMetricOrder)}`)
   const paidRefundMetricOrderRes = await fetch(`${base}/api/admin/orders/${refundMetricOrder.id}/payment`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ payment_status: 'paid' })
   })
   if (!paidRefundMetricOrderRes.ok) throw new Error(`temporary refund metric order paid failed: ${paidRefundMetricOrderRes.status}`)
   const refundUsdOrderRes = await fetch(`${base}/api/admin/orders/${refundMetricOrder.id}/payment`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ payment_status: 'refunded' })
   })
   if (!refundUsdOrderRes.ok) throw new Error(`temporary USD order refund failed: ${refundUsdOrderRes.status}`)
-  const refundedCurrencyUsers = await fetchJsonArray(`${base}/api/admin/users`, { headers: { authorization: 'Bearer admin-e2e' } }, 'admin users after USD refund')
+  const refundedCurrencyUsers = await fetchJsonArray(`${base}/api/admin/users`, { headers: { authorization: `Bearer ${adminTokenCache}` } }, 'admin users after USD refund')
   const refundedCurrencyUser = refundedCurrencyUsers.find((user) => String(user.email || '').toLowerCase() === refundedCurrencyEmail)
   if (Number(refundedCurrencyUser?.paid_by_currency?.KRW || 0) === 0 && Number(refundedCurrencyUser?.total_paid_cents || 0) === 0) ok('admin user paid metrics exclude refunded orders')
   else throw new Error(`admin user paid metrics include refunded order: ${JSON.stringify(refundedCurrencyUser)}`)
   const invalidProductOptionPriceRes = await fetch(`${base}/api/admin/products/${productForPublishCheck.id}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ ...productForPublishCheck, options: [{ ...(productForPublishCheck.options?.[0] || {}), price_cents: 1234.5 }] })
   })
   if (invalidProductOptionPriceRes.status === 400) ok('api rejects non-integer option price')
   else throw new Error(`non-integer option price accepted: ${invalidProductOptionPriceRes.status}`)
   const duplicateProductOptionRes = await fetch(`${base}/api/admin/products/${productForPublishCheck.id}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({
       ...productForPublishCheck,
       options: [
@@ -3037,55 +3060,55 @@ try {
   else throw new Error(`duplicate product option names accepted: ${duplicateProductOptionRes.status}`)
   const hiddenCategoryForPublishRes = await fetch(`${base}/api/admin/categories`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ slug: `hidden-publish-${stamp}`, title: `隐藏发布分类 ${stamp}`, status: 'hidden' })
   })
   const hiddenCategoryForPublish = await hiddenCategoryForPublishRes.json()
   if (!hiddenCategoryForPublishRes.ok) throw new Error(`hidden publish category setup failed: ${hiddenCategoryForPublishRes.status}`)
   const publishedHiddenCategoryProductRes = await fetch(`${base}/api/admin/products/${productForPublishCheck.id}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ ...productForPublishCheck, category_id: hiddenCategoryForPublish.id, status: 'published' })
   })
   if (publishedHiddenCategoryProductRes.status === 400) ok('api rejects published product under hidden category')
   else throw new Error(`published product under hidden category accepted: ${publishedHiddenCategoryProductRes.status}`)
-  await fetch(`${base}/api/admin/categories/${hiddenCategoryForPublish.id}`, { method: 'DELETE', headers: { authorization: 'Bearer admin-e2e', 'x-confirm-delete': 'true' } }).catch(() => {})
-  const categoryForPublishCheck = await fetch(`${base}/api/admin/categories`, { headers: { authorization: 'Bearer admin-e2e' } }).then((res) => res.json()).then((items) => items[0])
+  await fetch(`${base}/api/admin/categories/${hiddenCategoryForPublish.id}`, { method: 'DELETE', headers: { authorization: `Bearer ${adminTokenCache}`, 'x-confirm-delete': 'true' } }).catch(() => {})
+  const categoryForPublishCheck = await fetch(`${base}/api/admin/categories`, { headers: { authorization: `Bearer ${adminTokenCache}` } }).then((res) => res.json()).then((items) => items[0])
   const invalidCategoryPublishRes = await fetch(`${base}/api/admin/categories/${categoryForPublishCheck.id}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ ...categoryForPublishCheck, status: 'archived' })
   })
   if (invalidCategoryPublishRes.status === 400) ok('api rejects invalid category publish status')
   else throw new Error(`invalid category publish status accepted: ${invalidCategoryPublishRes.status}`)
   const hidePublishedCategoryRes = await fetch(`${base}/api/admin/categories/${categoryForPublishCheck.id}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ ...categoryForPublishCheck, status: 'hidden' })
   })
   if (hidePublishedCategoryRes.status === 409) ok('api rejects hiding category with published products')
   else throw new Error(`category with published products hidden: ${hidePublishedCategoryRes.status}`)
   const orderedProductDeleteRes = await fetch(`${base}/api/admin/products/${stableOrderProduct.id}`, {
     method: 'DELETE',
-    headers: { authorization: 'Bearer admin-e2e', 'x-confirm-delete': 'true' }
+    headers: { authorization: `Bearer ${adminTokenCache}`, 'x-confirm-delete': 'true' }
   })
   if (orderedProductDeleteRes.status === 409) ok('api prevents deleting products with orders')
   else throw new Error(`ordered product delete was not blocked: ${orderedProductDeleteRes.status}`)
   const referencedProductDeleteRes = await fetch(`${base}/api/admin/products/${productForPublishCheck.id}`, {
     method: 'DELETE',
-    headers: { authorization: 'Bearer admin-e2e', 'x-confirm-delete': 'true' }
+    headers: { authorization: `Bearer ${adminTokenCache}`, 'x-confirm-delete': 'true' }
   })
   if (referencedProductDeleteRes.status === 409) ok('api prevents deleting products referenced by site content')
   else throw new Error(`referenced product delete was not blocked: ${referencedProductDeleteRes.status}`)
   await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ paypal: { enabled: true, currency: 'USD' } })
   })
   await waitForPaypalCurrency('USD')
   const cancelledStatusRes = await fetch(`${base}/api/admin/orders/${unpaidOrder.id}/status`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ order_status: 'cancelled' })
   })
   if (!cancelledStatusRes.ok) throw new Error(`cancel unpaid order setup failed: ${cancelledStatusRes.status}`)
@@ -3122,7 +3145,7 @@ try {
   }).then((res) => res.json())
   await fetch(`${base}/api/admin/orders/${cancelAfterCreateOrder.id}/status`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ order_status: 'cancelled' })
   })
   const staleCaptureRes = await fetch(`${base}/api/paypal/capture-order`, {
@@ -3158,13 +3181,13 @@ try {
   }).then(async (res) => ({ status: res.status, body: await res.json() }))
   const staleBalanceMarkRes = await fetch(`${base}/api/admin/orders/${staleCreatedOrder.id}/payment`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ payment_status: 'deposit_paid' })
   })
   if (!staleBalanceMarkRes.ok) throw new Error(`stale created order deposit mark failed: ${staleBalanceMarkRes.status}`)
   const staleBalanceDueRes = await fetch(`${base}/api/admin/orders/${staleCreatedOrder.id}/payment`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ payment_status: 'balance_due' })
   })
   if (!staleBalanceDueRes.ok) throw new Error(`stale created order balance due mark failed: ${staleBalanceDueRes.status}`)
@@ -3232,7 +3255,7 @@ try {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ paypal_order_id: paypalCreateOne.id })
   }).then((res) => res.json())
-  const paypalCaptureBackup = await fetch(`${base}/api/admin/backup`, { headers: { authorization: 'Bearer admin-e2e' } }).then((res) => res.json())
+  const paypalCaptureBackup = await fetch(`${base}/api/admin/backup`, { headers: { authorization: `Bearer ${adminTokenCache}` } }).then((res) => res.json())
   const paypalCaptureEventOrder = paypalCaptureBackup.data?.orders?.find((order) => order.id === payableOrder.id)
   if (paypalCaptureEventOrder?.events?.some((event) => event.type === 'payment' && event.actor === 'paypal' && String(event.message || '').includes('PayPal 付款状态'))) ok('paypal capture records order payment event')
   else throw new Error(`paypal capture payment event missing: ${JSON.stringify(paypalCaptureEventOrder?.events)}`)
@@ -3247,14 +3270,14 @@ try {
   else throw new Error(`deposit-paid order created paypal before balance due: ${depositPaidCreateRes.status}`)
   const advanceDepositToCraftingRes = await fetch(`${base}/api/admin/orders/${payableOrder.id}/status`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ order_status: 'crafting' })
   })
   if (advanceDepositToCraftingRes.ok) ok('api allows deposit-paid order to start crafting')
   else throw new Error(`deposit-paid order could not start crafting: ${advanceDepositToCraftingRes.status}`)
   const advanceDepositToShipRes = await fetch(`${base}/api/admin/orders/${payableOrder.id}/status`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ order_status: 'ready_ship' })
   })
   if (advanceDepositToShipRes.status === 400) ok('api blocks deposit-only order from shipping')
@@ -3290,7 +3313,7 @@ try {
   })
   const statusBalanceDueRes = await fetch(`${base}/api/admin/orders/${statusBalanceOrder.id}/status`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ order_status: 'balance_due' })
   })
   const statusBalanceDueOrder = await statusBalanceDueRes.json()
@@ -3298,7 +3321,7 @@ try {
   else throw new Error(`balance_due status did not sync payment: ${statusBalanceDueRes.status} ${JSON.stringify(statusBalanceDueOrder)}`)
   const markBalanceDueRes = await fetch(`${base}/api/admin/orders/${payableOrder.id}/payment`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ payment_status: 'balance_due' })
   })
   if (!markBalanceDueRes.ok) throw new Error(`mark balance due failed: ${markBalanceDueRes.status}`)
@@ -3634,7 +3657,7 @@ try {
     && readyPreSubmitText.includes('Shanghai E2E Shipping Address')
   ) ok('order page pre-submit checklist reflects completed customer details')
   else throw new Error(`order page pre-submit completed state invalid: ${readyPreSubmitText}`)
-  const commercialOrdersBeforeSubmit = await fetchJsonArray(`${base}/api/admin/orders`, { headers: { authorization: 'Bearer admin-e2e' } }, 'admin orders before commercial order submit')
+  const commercialOrdersBeforeSubmit = await fetchJsonArray(`${base}/api/admin/orders`, { headers: { authorization: `Bearer ${adminTokenCache}` } }, 'admin orders before commercial order submit')
   const commercialOrderIdsBeforeSubmit = new Set(commercialOrdersBeforeSubmit.map((order) => order.id))
   await orderPage.getByRole('button', { name: '提交订单' }).click()
   const submitFailed = orderPage.locator('text=订单提交失败')
@@ -3648,7 +3671,7 @@ try {
   const payLaterMode = await orderPage.locator('text=支付单暂时未生成').first().isVisible({ timeout: 500 }).catch(() => false)
   if (payLaterMode) ok('order created with pay-later recovery prompt')
   else ok('order created with paypal prompt')
-  const commercialOrders = await fetchJsonArray(`${base}/api/admin/orders`, { headers: { authorization: 'Bearer admin-e2e' } }, 'admin orders after commercial order submit')
+  const commercialOrders = await fetchJsonArray(`${base}/api/admin/orders`, { headers: { authorization: `Bearer ${adminTokenCache}` } }, 'admin orders after commercial order submit')
   const commercialOrder = commercialOrders.find((order) => !commercialOrderIdsBeforeSubmit.has(order.id) && order.email === testEmail && order.customer_name === 'Commercial Test')
   if (commercialOrder?.id) {
     commercialOrderId = commercialOrder.id
@@ -3935,7 +3958,7 @@ try {
   })
   await fetch(`${base}/api/admin/orders/${balanceUiOrder.id}/payment`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ payment_status: 'balance_due' })
   })
   await page.getByRole('button', { name: '退出' }).click()
@@ -4203,7 +4226,7 @@ try {
     const trackingTemplate = `https://tracking.example.com/${stamp}?carrier={carrier}&code={tracking}`
     const trackingSetupRes = await fetch(`${base}/api/admin/site`, {
       method: 'PUT',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
       body: JSON.stringify({ shipping: { tracking_url_template: trackingTemplate } })
     })
     if (trackingSetupRes.ok) ok('admin site config saves tracking URL template')
@@ -4232,7 +4255,7 @@ try {
     if (!trackingUiOrderRes.ok) throw new Error(`tracking UI order create failed: ${trackingUiOrderRes.status} ${JSON.stringify(trackingUiOrder)}`)
     const trackingUiUpdateRes = await fetch(`${base}/api/admin/orders/${trackingUiOrder.id}/note`, {
       method: 'PUT',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
       body: JSON.stringify({ shipping_carrier: 'DHL', tracking_no: trackingUiNo })
     })
     if (!trackingUiUpdateRes.ok) throw new Error(`tracking UI order update failed: ${trackingUiUpdateRes.status}`)
@@ -4341,7 +4364,7 @@ try {
   if (overviewStatsText.includes('$')) ok('admin overview revenue displays original currency')
   else throw new Error(`admin overview revenue missing USD grouping: ${overviewStatsText}`)
   await expectText(page, '公开可售商品', 'admin overview public product metric visible')
-  const readinessOverview = await fetch(`${base}/api/admin/overview`, { headers: { authorization: 'Bearer admin-e2e' } }).then((res) => res.json())
+  const readinessOverview = await fetch(`${base}/api/admin/overview`, { headers: { authorization: `Bearer ${adminTokenCache}` } }).then((res) => res.json())
   if (Number(readinessOverview.public_products || 0) > 0 && Number(readinessOverview.public_products || 0) < Number(readinessOverview.products || 0)) ok('admin overview excludes hidden-category products from public product count')
   else throw new Error(`admin overview public product count invalid: ${JSON.stringify(readinessOverview)}`)
   await expectText(page, '至少一种客户联系方式已启用', 'admin readiness checks customer contact')
@@ -4411,7 +4434,7 @@ try {
     const res = await fetch(`${baseUrl}/api/admin/orders`, { headers: { authorization: `Bearer ${token}` } })
     const orders = await res.json()
     return Array.isArray(orders) && orders.some((order) => order.email === email)
-  }, { baseUrl: base, token: 'admin-e2e', email: refreshEmail }, { timeout: 10000 })
+  }, { baseUrl: base, token: adminTokenCache, email: refreshEmail }, { timeout: 10000 })
   await page.getByRole('button', { name: '刷新数据' }).click()
   await acceptTransientText(page, '数据已刷新', 'admin manual refresh feedback accepted')
   await page.getByRole('button', { name: '概览' }).click()
@@ -4458,7 +4481,7 @@ try {
   await expectText(page, '最近跟进', 'admin user cards show latest followup summary')
   await expectText(page, '下次跟进', 'admin user cards show next followup summary')
   const manualUserEmail = `commercial-manual-user-${stamp}@example.com`
-  const overviewBeforeManualUser = await fetch(`${base}/api/admin/overview`, { headers: { authorization: 'Bearer admin-e2e' } }).then((res) => res.json())
+  const overviewBeforeManualUser = await fetch(`${base}/api/admin/overview`, { headers: { authorization: `Bearer ${adminTokenCache}` } }).then((res) => res.json())
   await page.getByRole('button', { name: '新增用户' }).click()
   await expectText(page, '新增用户', 'admin user create modal visible')
   await page.getByRole('dialog').filter({ hasText: '新增用户' }).waitFor({ state: 'visible', timeout: 10000 })
@@ -4521,7 +4544,7 @@ try {
   const manualUserSaveRes = await manualUserSaveResponse
   if (manualUserSaveRes.ok()) ok('admin user modal save API succeeds')
   else throw new Error(`admin user modal save API failed: ${manualUserSaveRes.status()}`)
-  const overviewAfterManualUser = await fetch(`${base}/api/admin/overview`, { headers: { authorization: 'Bearer admin-e2e' } }).then((res) => res.json())
+  const overviewAfterManualUser = await fetch(`${base}/api/admin/overview`, { headers: { authorization: `Bearer ${adminTokenCache}` } }).then((res) => res.json())
   if (Number(overviewAfterManualUser.users || 0) === Number(overviewBeforeManualUser.users || 0) + 1) ok('admin overview includes manually created users')
   else throw new Error(`admin overview user count missed manual user: ${overviewBeforeManualUser.users} -> ${overviewAfterManualUser.users}`)
   await page.getByPlaceholder('搜索姓名、邮箱、国家、标签或备注').fill(manualUserEmail)
@@ -4571,12 +4594,12 @@ try {
   await expectText(page, 'Manual Customer Updated', 'admin user modal edited user visible')
   await expectText(page, 'US', 'admin user country persists after edit')
   const manualUserUpdatedEmail = `commercial-manual-user-updated-${stamp}@example.com`
-  const manualUserBeforeEmailEdit = await fetchJsonArray(`${base}/api/admin/users`, { headers: { authorization: 'Bearer admin-e2e' } }, 'admin users before email edit')
+  const manualUserBeforeEmailEdit = await fetchJsonArray(`${base}/api/admin/users`, { headers: { authorization: `Bearer ${adminTokenCache}` } }, 'admin users before email edit')
   const manualUserForEmailEdit = manualUserBeforeEmailEdit.find((user) => String(user.email || '').toLowerCase() === manualUserEmail)
   if (!manualUserForEmailEdit?.id) throw new Error(`manual user missing before email edit: ${manualUserEmail}`)
   const manualUserEmailEditRes = await fetch(`${base}/api/admin/users/${manualUserForEmailEdit.id}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ email: ` ${manualUserUpdatedEmail.toUpperCase()} `, name: 'Manual Customer Updated', status: 'active' })
   })
   const manualUserEmailEdit = await manualUserEmailEditRes.json()
@@ -4584,43 +4607,43 @@ try {
   else throw new Error(`admin user email edit failed: ${manualUserEmailEditRes.status} ${JSON.stringify(manualUserEmailEdit)}`)
   const duplicateUserEmailRes = await fetch(`${base}/api/admin/users/${manualUserForEmailEdit.id}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ email: testEmail, name: 'Manual Customer Updated', status: 'active' })
   })
   if (duplicateUserEmailRes.status === 409) ok('api rejects admin user duplicate email edit')
   else throw new Error(`duplicate admin user email edit accepted: ${duplicateUserEmailRes.status}`)
   const protectedAdminEmailRes = await fetch(`${base}/api/admin/users/admin-e2e`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ email: `changed-admin-e2e-${stamp}@example.com`, name: 'Admin E2E', status: 'active' })
   })
   if (protectedAdminEmailRes.status === 409) ok('api protects system admin user email')
   else throw new Error(`protected admin email edit accepted: ${protectedAdminEmailRes.status}`)
   const protectedAdminStatusRes = await fetch(`${base}/api/admin/users/admin-e2e`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ email: 'admin-e2e@example.com', name: 'Admin E2E', status: 'blocked' })
   })
   if (protectedAdminStatusRes.status === 409) ok('api keeps system admin user active')
   else throw new Error(`protected admin status edit accepted: ${protectedAdminStatusRes.status}`)
   const protectedAdminDeleteRes = await fetch(`${base}/api/admin/users/admin-e2e`, {
     method: 'DELETE',
-    headers: { authorization: 'Bearer admin-e2e', 'x-confirm-delete': 'true' }
+    headers: { authorization: `Bearer ${adminTokenCache}`, 'x-confirm-delete': 'true' }
   })
   if (protectedAdminDeleteRes.status === 409) ok('api protects system admin user from deletion')
   else throw new Error(`protected admin delete accepted: ${protectedAdminDeleteRes.status}`)
   const deleteUserWithoutConfirmRes = await fetch(`${base}/api/admin/users/${manualUserForEmailEdit.id}`, {
     method: 'DELETE',
-    headers: { authorization: 'Bearer admin-e2e' }
+    headers: { authorization: `Bearer ${adminTokenCache}` }
   })
   if (deleteUserWithoutConfirmRes.status === 400) ok('api requires confirmation for admin user delete')
   else throw new Error(`admin user delete without confirmation accepted: ${deleteUserWithoutConfirmRes.status}`)
-  const customerBeforeDeleteBlock = await fetchJsonArray(`${base}/api/admin/users`, { headers: { authorization: 'Bearer admin-e2e' } }, 'admin users before customer delete block')
+  const customerBeforeDeleteBlock = await fetchJsonArray(`${base}/api/admin/users`, { headers: { authorization: `Bearer ${adminTokenCache}` } }, 'admin users before customer delete block')
   const userWithOrders = customerBeforeDeleteBlock.find((user) => String(user.email || '').toLowerCase() === String(testEmail).toLowerCase())
   if (!userWithOrders?.id) throw new Error(`user with orders missing before delete block: ${testEmail}`)
   const userWithOrdersDeleteRes = await fetch(`${base}/api/admin/users/${userWithOrders.id}`, {
     method: 'DELETE',
-    headers: { authorization: 'Bearer admin-e2e', 'x-confirm-delete': 'true' }
+    headers: { authorization: `Bearer ${adminTokenCache}`, 'x-confirm-delete': 'true' }
   })
   if (userWithOrdersDeleteRes.status === 409) ok('api blocks deleting users with orders')
   else throw new Error(`admin user with orders delete accepted: ${userWithOrdersDeleteRes.status}`)
@@ -4699,49 +4722,49 @@ try {
   await expectText(page, '最近跟进', 'admin user followup summary remains visible after save')
   const invalidUserStatusRes = await fetch(`${base}/api/admin/users/invalid-user-${stamp}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ email: `invalid-user-${stamp}@example.com`, name: 'Invalid User', status: 'deleted' })
   })
   if (invalidUserStatusRes.status === 400) ok('api rejects invalid admin user status')
   else throw new Error(`invalid admin user status accepted: ${invalidUserStatusRes.status}`)
   const invalidUserEmailRes = await fetch(`${base}/api/admin/users/invalid-email-${stamp}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ email: 'bad-email', name: 'Invalid Email', status: 'active' })
   })
   if (invalidUserEmailRes.status === 400) ok('api rejects invalid admin user email')
   else throw new Error(`invalid admin user email accepted: ${invalidUserEmailRes.status}`)
   const emptyUserEmailRes = await fetch(`${base}/api/admin/users/empty-email-${stamp}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ email: '   ', name: 'Empty Email', status: 'active' })
   })
   if (emptyUserEmailRes.status === 400) ok('api rejects empty admin user email')
   else throw new Error(`empty admin user email accepted: ${emptyUserEmailRes.status}`)
   const invalidUserNameRes = await fetch(`${base}/api/admin/users/invalid-name-${stamp}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ email: `invalid-name-${stamp}@example.com`, name: 'N'.repeat(121), status: 'active' })
   })
   if (invalidUserNameRes.status === 400) ok('api rejects overlong admin user name')
   else throw new Error(`overlong admin user name accepted: ${invalidUserNameRes.status}`)
   const invalidFollowupRes = await fetch(`${base}/api/admin/users/invalid-followup-${stamp}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ email: `invalid-followup-${stamp}@example.com`, name: 'Invalid Followup', status: 'active', followups: [{ content: '', next_at: 'not-a-date' }] })
   })
   if (invalidFollowupRes.status === 400) ok('api rejects invalid admin user followup')
   else throw new Error(`invalid admin user followup accepted: ${invalidFollowupRes.status}`)
   const invalidFollowupDateRes = await fetch(`${base}/api/admin/users/invalid-followup-date-${stamp}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ email: `invalid-followup-date-${stamp}@example.com`, name: 'Invalid Followup Date', status: 'active', followups: [{ content: 'Invalid impossible date', next_at: '2026-99-99' }] })
   })
   if (invalidFollowupDateRes.status === 400) ok('api rejects impossible admin user followup date')
   else throw new Error(`impossible admin user followup date accepted: ${invalidFollowupDateRes.status}`)
   const normalizedUserRes = await fetch(`${base}/api/admin/users/normalized-user-${stamp}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({
       email: ` Normalized-User-${stamp}@Example.COM `,
       name: '  Normalized User  ',
@@ -4768,14 +4791,14 @@ try {
     && normalizedUser.followups?.[1]?.content === 'old followup'
   ) ok('api normalizes admin user fields and followup order')
   else throw new Error(`admin user normalization invalid: ${normalizedUserRes.status} ${JSON.stringify(normalizedUser)}`)
-  const normalizedUserList = await fetchJsonArray(`${base}/api/admin/users`, { headers: { authorization: 'Bearer admin-e2e' } }, 'admin users after normalized user')
+  const normalizedUserList = await fetchJsonArray(`${base}/api/admin/users`, { headers: { authorization: `Bearer ${adminTokenCache}` } }, 'admin users after normalized user')
   const normalizedUserFromList = normalizedUserList.find((user) => user.email === `normalized-user-${stamp}@example.com`)
   if (normalizedUserFromList?.tags?.length === 2 && normalizedUserFromList.followups?.[0]?.content === 'new followup') ok('admin user list keeps normalized fields')
   else throw new Error(`admin user list normalization invalid: ${JSON.stringify(normalizedUserFromList)}`)
   const longUserEmail = `very-long-commercial-customer-email-${stamp}-with-many-segments@example.com`
   const longUserRes = await fetch(`${base}/api/admin/users/long-user-${stamp}`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({
       email: longUserEmail,
       name: `VeryLongCommercialCustomerName${stamp}${'X'.repeat(70)}`,
@@ -4839,7 +4862,7 @@ try {
   await page.setViewportSize({ width: 1440, height: 1100 })
   await page.waitForTimeout(300)
   const emptyCategoryAdminPage = await browser.newPage({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' })
-  await emptyCategoryAdminPage.addInitScript(() => localStorage.setItem('admin_token', 'admin-e2e'))
+  await emptyCategoryAdminPage.addInitScript(() => localStorage.setItem('admin_token', adminTokenCache))
   await emptyCategoryAdminPage.route('**/api/admin/categories', route => route.fulfill({
     status: 200,
     contentType: 'application/json',
@@ -4884,7 +4907,7 @@ try {
   ok('admin category modal can discard unsaved changes explicitly')
   const temporaryCategoryRes = await fetch(`${base}/api/admin/categories`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({
       slug: temporaryCategorySlug,
       title: temporaryCategoryTitle,
@@ -5217,9 +5240,9 @@ try {
   }, adminOrderSearchEmail, { timeout: 10000 })
   ok('admin order search finds current order')
   const noPhotoAdminPage = await browser.newPage({ viewport: { width: 1440, height: 1100 }, locale: 'zh-CN' })
-  await noPhotoAdminPage.addInitScript(() => localStorage.setItem('admin_token', 'admin-e2e'))
+  await noPhotoAdminPage.addInitScript(() => localStorage.setItem('admin_token', adminTokenCache))
   const noPhotoOrderEmail = `no-photo-${stamp}@example.com`
-  const adminOrdersFixture = await fetchJsonArray(`${base}/api/admin/orders`, { headers: { authorization: 'Bearer admin-e2e' } }, 'admin orders for no-photo fixture')
+  const adminOrdersFixture = await fetchJsonArray(`${base}/api/admin/orders`, { headers: { authorization: `Bearer ${adminTokenCache}` } }, 'admin orders for no-photo fixture')
   const noPhotoFixture = { ...adminOrdersFixture[0], id: `no-photo-${stamp}`, order_no: `NP-${stamp}`, email: noPhotoOrderEmail, customer_name: 'No Photo Guard', photo_urls: [], photo_count: 0 }
   await noPhotoAdminPage.route('**/api/admin/orders', route => route.fulfill({
     status: 200,
@@ -5478,7 +5501,7 @@ try {
   ok('admin order detail opens in modal dialog')
   await expectText(page, '订单详情', 'admin order detail modal visible')
   const detailOrderNo = await orderDetailDialog.locator('h2').first().innerText()
-  const detailOrderForNote = (await fetchJsonArray(`${base}/api/admin/orders`, { headers: { authorization: 'Bearer admin-e2e' } }, 'admin orders for detail note autosave guard')).find((order) => order.order_no === detailOrderNo)
+  const detailOrderForNote = (await fetchJsonArray(`${base}/api/admin/orders`, { headers: { authorization: `Bearer ${adminTokenCache}` } }, 'admin orders for detail note autosave guard')).find((order) => order.order_no === detailOrderNo)
   if (!detailOrderForNote?.id) throw new Error(`detail order id missing for ${detailOrderNo}`)
   await page.getByRole('button', { name: '复制信息' }).first().waitFor({ state: 'visible', timeout: 10000 })
   ok('admin order detail copy button visible')
@@ -5553,58 +5576,58 @@ try {
     if (!res.ok) return false
     const order = await res.json()
     return order.tracking_no === trackingNo
-  }, { baseUrl: base, token: 'admin-e2e', orderId: detailOrderForNote.id, trackingNo: `TRACK-${stamp}` }, { timeout: 10000 })
+  }, { baseUrl: base, token: adminTokenCache, orderId: detailOrderForNote.id, trackingNo: `TRACK-${stamp}` }, { timeout: 10000 })
   await page.waitForTimeout(250)
   await page.waitForFunction(async ({ baseUrl, token, orderNo, note, trackingNo }) => {
     const res = await fetch(`${baseUrl}/api/admin/orders`, { headers: { authorization: `Bearer ${token}` } })
     if (!res.ok) return false
     const orders = await res.json()
     return orders.some((order) => order.order_no === orderNo && order.internal_note === note && order.shipping_carrier === 'DHL' && order.tracking_no === trackingNo)
-  }, { baseUrl: base, token: 'admin-e2e', orderNo: detailOrderNo, note: `detail-note-${stamp}`, trackingNo: `TRACK-${stamp}` }, { timeout: 10000 })
+  }, { baseUrl: base, token: adminTokenCache, orderNo: detailOrderNo, note: `detail-note-${stamp}`, trackingNo: `TRACK-${stamp}` }, { timeout: 10000 })
   ok('admin order detail note and tracking persisted')
-  let noteVersionBefore = await fetch(`${base}/api/admin/orders/${detailOrderForNote.id}`, { headers: { authorization: 'Bearer admin-e2e' } }).then((res) => res.json())
+  let noteVersionBefore = await fetch(`${base}/api/admin/orders/${detailOrderForNote.id}`, { headers: { authorization: `Bearer ${adminTokenCache}` } }).then((res) => res.json())
   let noteConcurrentUpdateRes = await fetch(`${base}/api/admin/orders/${detailOrderForNote.id}/note`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ internal_note: `concurrent-note-${stamp}`, shipping_carrier: 'DHL', tracking_no: `TRACK-${stamp}`, revision: noteVersionBefore.revision || 0, updated_at: noteVersionBefore.updated_at })
   })
   if (noteConcurrentUpdateRes.status === 409) {
-    noteVersionBefore = await fetch(`${base}/api/admin/orders/${detailOrderForNote.id}`, { headers: { authorization: 'Bearer admin-e2e' } }).then((res) => res.json())
+    noteVersionBefore = await fetch(`${base}/api/admin/orders/${detailOrderForNote.id}`, { headers: { authorization: `Bearer ${adminTokenCache}` } }).then((res) => res.json())
     noteConcurrentUpdateRes = await fetch(`${base}/api/admin/orders/${detailOrderForNote.id}/note`, {
       method: 'PUT',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
       body: JSON.stringify({ internal_note: `concurrent-note-${stamp}`, shipping_carrier: 'DHL', tracking_no: `TRACK-${stamp}`, revision: noteVersionBefore.revision || 0, updated_at: noteVersionBefore.updated_at })
     })
   }
   if (!noteConcurrentUpdateRes.ok) throw new Error(`admin order concurrent setup note update failed: ${noteConcurrentUpdateRes.status}`)
-  const noteVersionAfterConcurrent = await fetch(`${base}/api/admin/orders/${detailOrderForNote.id}`, { headers: { authorization: 'Bearer admin-e2e' } }).then((res) => res.json())
+  const noteVersionAfterConcurrent = await fetch(`${base}/api/admin/orders/${detailOrderForNote.id}`, { headers: { authorization: `Bearer ${adminTokenCache}` } }).then((res) => res.json())
   if (Number(noteVersionAfterConcurrent.revision || 0) > Number(noteVersionBefore.revision || 0)) ok('api increments admin order revision after note save')
   else throw new Error(`admin order revision did not increment: ${noteVersionBefore.revision} -> ${noteVersionAfterConcurrent.revision}`)
   const staleNoteSaveRes = await fetch(`${base}/api/admin/orders/${detailOrderForNote.id}/note`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ internal_note: `stale-note-${stamp}`, shipping_carrier: 'DHL', tracking_no: `TRACK-${stamp}`, revision: noteVersionBefore.revision || 0, updated_at: noteVersionBefore.updated_at })
   })
   if (staleNoteSaveRes.status === 409) ok('api rejects stale admin order note save')
   else throw new Error(`stale admin order note save accepted: ${staleNoteSaveRes.status}`)
-  const noteVersionAfterConflict = await fetch(`${base}/api/admin/orders/${detailOrderForNote.id}`, { headers: { authorization: 'Bearer admin-e2e' } }).then((res) => res.json())
+  const noteVersionAfterConflict = await fetch(`${base}/api/admin/orders/${detailOrderForNote.id}`, { headers: { authorization: `Bearer ${adminTokenCache}` } }).then((res) => res.json())
   const staleStatusSaveRes = await fetch(`${base}/api/admin/orders/${detailOrderForNote.id}/status`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ order_status: noteVersionAfterConflict.order_status, revision: noteVersionBefore.revision || 0, updated_at: noteVersionBefore.updated_at })
   })
   if (staleStatusSaveRes.status === 409) ok('api rejects stale admin order status save')
   else throw new Error(`stale admin order status save accepted: ${staleStatusSaveRes.status}`)
   const stalePaymentSaveRes = await fetch(`${base}/api/admin/orders/${detailOrderForNote.id}/payment`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ payment_status: noteVersionAfterConflict.payment_status, revision: noteVersionBefore.revision || 0, updated_at: noteVersionBefore.updated_at })
   })
   if (stalePaymentSaveRes.status === 409) ok('api rejects stale admin order payment save')
   else throw new Error(`stale admin order payment save accepted: ${stalePaymentSaveRes.status}`)
   const staleFlagSaveRes = await fetch(`${base}/api/admin/orders/${detailOrderForNote.id}/flag`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ flagged: Boolean(noteVersionAfterConflict.flagged), revision: noteVersionBefore.revision || 0, updated_at: noteVersionBefore.updated_at })
   })
   if (staleFlagSaveRes.status === 409) ok('api rejects stale admin order flag save')
@@ -5612,7 +5635,7 @@ try {
   const longAdminNote = `api-note-${stamp}-${'N'.repeat(2300)}`
   const longAdminNoteRes = await fetch(`${base}/api/admin/orders/${detailOrderForNote.id}/note`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ internal_note: longAdminNote, shipping_carrier: 'DHL', tracking_no: `TRACK-${stamp}`, revision: noteVersionAfterConflict.revision || 0, updated_at: noteVersionAfterConflict.updated_at })
   })
   const longAdminNoteOrder = await longAdminNoteRes.json()
@@ -5620,7 +5643,7 @@ try {
   else throw new Error(`api admin order internal note length cap failed: ${longAdminNoteRes.status} ${JSON.stringify({ length: longAdminNoteOrder.internal_note?.length })}`)
   await fetch(`${base}/api/admin/orders/${detailOrderForNote.id}/note`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ internal_note: `detail-note-${stamp}`, shipping_carrier: 'DHL', tracking_no: `TRACK-${stamp}`, revision: longAdminNoteOrder.revision || 0, updated_at: longAdminNoteOrder.updated_at })
   })
   await page.waitForFunction(async ({ baseUrl, token, orderNo, trackingNo }) => {
@@ -5629,7 +5652,7 @@ try {
     const orders = await res.json()
     const order = orders.find((item) => item.order_no === orderNo)
     return order?.events?.some((event) => event.type === 'tracking' && event.actor === 'admin' && String(event.message || '').includes(trackingNo))
-  }, { baseUrl: base, token: 'admin-e2e', orderNo: detailOrderNo, trackingNo: `TRACK-${stamp}` }, { timeout: 10000 })
+  }, { baseUrl: base, token: adminTokenCache, orderNo: detailOrderNo, trackingNo: `TRACK-${stamp}` }, { timeout: 10000 })
   ok('admin order tracking update records fulfillment event')
   await expectText(page, '履约记录', 'admin order detail events panel visible')
   ok('admin order detail tracking event visible')
@@ -5678,7 +5701,7 @@ try {
     if (!res.ok) return false
     const orders = await res.json()
     return orders.some((order) => order.email === email && order.shipping_carrier === 'SF Express' && order.tracking_no === trackingNo)
-  }, { baseUrl: base, token: 'admin-e2e', email: adminOrderSearchEmail, trackingNo: mobileTrackingNo }, { timeout: 10000 })
+  }, { baseUrl: base, token: adminTokenCache, email: adminOrderSearchEmail, trackingNo: mobileTrackingNo }, { timeout: 10000 })
   ok('admin mobile order tracking persisted')
   await page.screenshot({ path: '/root/pet-wool-platform/test-results/mobile-admin-orders.png', fullPage: true })
   await page.setViewportSize({ width: 1440, height: 1100 })
@@ -5802,7 +5825,7 @@ try {
   const restoredWebhookInput = await page.getByPlaceholder('PayPal Webhook ID').inputValue()
   if (restoredSecretInput === '' && restoredWebhookInput === '') ok('admin site restore keeps payment secret inputs redacted')
   else throw new Error(`admin site restore exposed payment secrets in form: ${JSON.stringify({ restoredSecretInput, restoredWebhookInput })}`)
-  const restoreSecretBackup = await fetch(`${base}/api/admin/backup?secrets=1`, { headers: fullBackupHeaders('admin-e2e') }).then((res) => res.json())
+  const restoreSecretBackup = await fetch(`${base}/api/admin/backup?secrets=1`, { headers: fullBackupHeaders(adminTokenCache) }).then((res) => res.json())
   if (restoreSecretBackup.data?.site?.paypal?.secret === uiRestoreSecret && restoreSecretBackup.data?.site?.paypal?.webhook_id === uiRestoreWebhook) ok('admin site restore upload preserves hidden payment secrets')
   else throw new Error(`admin site restore upload cleared hidden payment secrets: ${JSON.stringify(restoreSecretBackup.data?.site?.paypal)}`)
   const restoreRequestCountBeforeTypeCheck = await page.evaluate(() => performance.getEntriesByType('resource').filter((entry) => entry.name.includes('/api/admin/site/restore')).length)
@@ -6003,7 +6026,7 @@ try {
   const pipeBlogContent = '正文第一段|正文第二段|正文第三段'
   const pipeBlogApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ blog: [{ id: pipeBlogSlug, slug: pipeBlogSlug, date: '2026-01-31', title: '竖线博客', excerpt: '竖线摘要', content: pipeBlogContent, image_url: '/assets/hero.png', tags: ['运营'] }] })
   })
   if (pipeBlogApiRes.ok) ok('admin site blog with pipe content save API succeeds')
@@ -6015,7 +6038,7 @@ try {
   const noTagPipeBlogContent = '无标签正文第一段|无标签正文第二段'
   const noTagPipeBlogApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ blog: [{ id: noTagPipeBlogSlug, slug: noTagPipeBlogSlug, date: '2026-02-01', title: '无标签竖线博客', excerpt: '无标签摘要', content: noTagPipeBlogContent, image_url: '/assets/hero.png', tags: [] }] })
   })
   if (noTagPipeBlogApiRes.ok) ok('admin site blog with pipe content and no tags save API succeeds')
@@ -6039,7 +6062,7 @@ try {
   const uploadedBlogImageSlug = `uploaded-blog-image-${stamp}`
   const uploadedBlogImageApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ blog: [{ id: uploadedBlogImageSlug, slug: uploadedBlogImageSlug, date: '2026-02-02', title: '上传图片博客', excerpt: '上传图片摘要', content: '上传图片正文', image_url: uploadedPhotoUrl, tags: ['运营'] }] })
   })
   if (uploadedBlogImageApiRes.ok) ok('admin site blog accepts uploaded image references')
@@ -6055,56 +6078,56 @@ try {
   else throw new Error(`admin site blog restore after pipe check failed: ${restoreBlogAfterPipeRes.status()}`)
   const invalidInstagramApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ brand: { instagram: 'not-a-url' } })
   })
   if (invalidInstagramApiRes.status === 400) ok('api rejects invalid instagram url')
   else throw new Error(`invalid instagram url accepted: ${invalidInstagramApiRes.status}`)
   const privateInstagramApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ brand: { instagram: 'http://127.0.0.1/profile' } })
   })
   if (privateInstagramApiRes.status === 400) ok('api rejects private network instagram url')
   else throw new Error(`private network instagram url accepted: ${privateInstagramApiRes.status}`)
   const invalidFaqApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ faq: [{ id: `bad-faq-${stamp}`, question: '', answer: '缺少问题' }] })
   })
   if (invalidFaqApiRes.status === 400) ok('api rejects invalid site faq rows')
   else throw new Error(`invalid site faq accepted: ${invalidFaqApiRes.status}`)
   const invalidReviewApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ reviews: [{ id: `bad-review-${stamp}`, name: '客户', country: 'CN', rating: 9, title: '标题', content: '内容' }] })
   })
   if (invalidReviewApiRes.status === 400) ok('api rejects invalid site review rows')
   else throw new Error(`invalid site review accepted: ${invalidReviewApiRes.status}`)
   const invalidBlogApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ blog: [{ id: `bad-blog-${stamp}`, slug: 'bad slug', date: '2026-01-01', title: '标题', excerpt: '摘要', content: '内容' }] })
   })
   if (invalidBlogApiRes.status === 400) ok('api rejects invalid site blog rows')
   else throw new Error(`invalid site blog accepted: ${invalidBlogApiRes.status}`)
   const invalidBlogDateApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ blog: [{ id: `bad-blog-date-${stamp}`, slug: `bad-blog-date-${stamp}`, date: '2026-02-31', title: '标题', excerpt: '摘要', content: '内容', image_url: '/assets/hero.png' }] })
   })
   if (invalidBlogDateApiRes.status === 400) ok('api rejects invalid site blog dates')
   else throw new Error(`invalid site blog date accepted: ${invalidBlogDateApiRes.status}`)
   const missingBlogImageApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ blog: [{ id: `missing-blog-image-${stamp}`, slug: `missing-blog-image-${stamp}`, date: '2026-01-01', title: '标题', excerpt: '摘要', content: '内容', image_url: '' }] })
   })
   if (missingBlogImageApiRes.status === 400) ok('api rejects site blog without image')
   else throw new Error(`site blog without image accepted: ${missingBlogImageApiRes.status}`)
   const duplicateFaqApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ faq: [
       { id: `duplicate-faq-a-${stamp}`, question: '重复 API FAQ', answer: '答案一' },
       { id: `duplicate-faq-b-${stamp}`, question: '重复 API FAQ', answer: '答案二' },
@@ -6114,7 +6137,7 @@ try {
   else throw new Error(`duplicate site faq accepted: ${duplicateFaqApiRes.status}`)
   const duplicateReviewApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ reviews: [
       { id: `duplicate-review-a-${stamp}`, name: '客户A', country: 'CN', rating: 5, title: '重复评价', content: '内容一' },
       { id: `duplicate-review-b-${stamp}`, name: '客户A', country: 'CN', rating: 4, title: '重复评价', content: '内容二' },
@@ -6124,7 +6147,7 @@ try {
   else throw new Error(`duplicate site reviews accepted: ${duplicateReviewApiRes.status}`)
   const duplicateBlogApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ blog: [
       { id: `duplicate-blog-a-${stamp}`, slug: `duplicate-blog-${stamp}`, date: '2026-01-01', title: '标题一', excerpt: '摘要一', content: '内容一', image_url: '/assets/hero.png' },
       { id: `duplicate-blog-b-${stamp}`, slug: `duplicate-blog-${stamp}`, date: '2026-01-02', title: '标题二', excerpt: '摘要二', content: '内容二', image_url: '/assets/hero.png' },
@@ -6134,14 +6157,14 @@ try {
   else throw new Error(`duplicate site blog slugs accepted: ${duplicateBlogApiRes.status}`)
   const invalidLivePaypalApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ paypal: { mode: 'live', client_id: '', secret: '', currency: 'USD' } })
   })
   if (invalidLivePaypalApiRes.status === 400) ok('api rejects live paypal without credentials')
   else throw new Error(`live paypal without credentials accepted: ${invalidLivePaypalApiRes.status}`)
   const unsupportedPaypalCurrencyApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ paypal: { currency: 'CNY' } })
   })
   const unsupportedPaypalCurrencyBody = await unsupportedPaypalCurrencyApiRes.json().catch(() => ({}))
@@ -6149,42 +6172,42 @@ try {
   else throw new Error(`unsupported paypal currency accepted or wrong error: ${unsupportedPaypalCurrencyApiRes.status} ${JSON.stringify(unsupportedPaypalCurrencyBody)}`)
   const invalidTrackingTemplateApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ shipping: { tracking_url_template: 'https://t.17track.net/zh-cn' } })
   })
   if (invalidTrackingTemplateApiRes.status === 400) ok('api rejects tracking template without tracking placeholder')
   else throw new Error(`tracking template without placeholder accepted: ${invalidTrackingTemplateApiRes.status}`)
   const privateContactApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ contact: { talk_enabled: true, talk_url: 'http://10.0.0.8/chat' } })
   })
   if (privateContactApiRes.status === 400) ok('api rejects private network contact url')
   else throw new Error(`private network contact url accepted: ${privateContactApiRes.status}`)
   const privateTrackingTemplateApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ shipping: { tracking_url_template: 'http://localhost/track/{tracking}' } })
   })
   if (privateTrackingTemplateApiRes.status === 400) ok('api rejects private network tracking template')
   else throw new Error(`private network tracking template accepted: ${privateTrackingTemplateApiRes.status}`)
   const overlongSiteFieldApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ paypal: { client_id: `client-${'x'.repeat(301)}` } })
   })
   if (overlongSiteFieldApiRes.status === 400) ok('api rejects overlong site config fields')
   else throw new Error(`overlong site config field accepted: ${overlongSiteFieldApiRes.status}`)
   const invalidThemeApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ theme: { defaultTheme: 'broken', themes: [{ key: 'broken', label: 'Broken', bg: 'not-a-color' }] } })
   })
   if (invalidThemeApiRes.status === 400) ok('api rejects invalid site theme config')
   else throw new Error(`invalid site theme config accepted: ${invalidThemeApiRes.status}`)
   const invalidBrandApiRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ brand: { name: '   ' } })
   })
   if (invalidBrandApiRes.status === 400) ok('api rejects empty brand name')
@@ -6226,7 +6249,7 @@ try {
   const normalizedSiteTextBrand = ` API 清洗品牌 ${stamp} `
   const normalizedSiteTextRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({
       brand: { name: normalizedSiteTextBrand, email: ` ${stamp}@example.com `, instagram: '' },
       contact: {
@@ -6256,7 +6279,7 @@ try {
   else throw new Error(`admin site normalized text invalid: ${JSON.stringify(normalizedPublicSite)}`)
   await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({
       brand: {
         name: temporaryBrandName,
@@ -6279,7 +6302,7 @@ try {
   const uiWebhookPreserveProbe = `ui-preserve-webhook-${stamp}`
   const uiSecretSetupRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ paypal: { secret: uiSecretPreserveProbe, webhook_id: uiWebhookPreserveProbe } })
   })
   if (!uiSecretSetupRes.ok) throw new Error(`admin site UI secret preserve setup failed: ${uiSecretSetupRes.status}`)
@@ -6288,7 +6311,7 @@ try {
     if (!res.ok) return false
     const backup = await res.json()
     return backup.data?.site?.paypal?.secret === secret && backup.data?.site?.paypal?.webhook_id === webhook
-  }, { baseUrl: base, token: 'admin-e2e', secret: uiSecretPreserveProbe, webhook: uiWebhookPreserveProbe }, { timeout: 10000 })
+  }, { baseUrl: base, token: adminTokenCache, secret: uiSecretPreserveProbe, webhook: uiWebhookPreserveProbe }, { timeout: 10000 })
   await page.goto(`${base}/admin`, { waitUntil: 'networkidle' })
   await page.getByRole('button', { name: '站点配置' }).click()
   const emptyLoadedSecret = await page.getByPlaceholder('PayPal Secret').inputValue()
@@ -6300,7 +6323,7 @@ try {
   await page.getByRole('button', { name: '保存配置' }).click()
   const preserveSecretSave = await preserveSecretSavePromise
   if (!preserveSecretSave.ok()) throw new Error(`admin site UI save with blank secret failed: ${preserveSecretSave.status()}`)
-  const preservedSecretBackup = await fetch(`${base}/api/admin/backup?secrets=1`, { headers: fullBackupHeaders('admin-e2e') }).then((res) => res.json())
+  const preservedSecretBackup = await fetch(`${base}/api/admin/backup?secrets=1`, { headers: fullBackupHeaders(adminTokenCache) }).then((res) => res.json())
   if (preservedSecretBackup.data?.site?.paypal?.secret === uiSecretPreserveProbe && preservedSecretBackup.data?.site?.paypal?.webhook_id === uiWebhookPreserveProbe) ok('admin site UI save preserves hidden payment secrets')
   else throw new Error(`admin site UI save cleared hidden payment secrets: ${JSON.stringify(preservedSecretBackup.data?.site?.paypal)}`)
   const faqFieldVisible = await page.evaluate(() => [...document.querySelectorAll('textarea')].some((node) => node.getAttribute('aria-label')?.includes('FAQ') || node.getAttribute('placeholder')?.includes('FAQ')))
@@ -6318,7 +6341,7 @@ try {
   else throw new Error(`topbar brand did not update: ${topbarBrand}`)
   const contactToggleRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ contact: { talk_enabled: false, line_enabled: false } })
   })
   if (contactToggleRes.ok) ok('admin contact config save API succeeds')
@@ -6337,14 +6360,14 @@ try {
   else throw new Error(`blog list contact fallback invalid: ${blogFallbackContactHref}`)
   const dirtyContactReadinessRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ contact: { talk_enabled: true, talk_url: '', line_enabled: true, line_url: '' } })
   })
   if (dirtyContactReadinessRes.status === 400) ok('api rejects enabled contact links without URLs')
   else throw new Error(`enabled contact without URLs accepted: ${dirtyContactReadinessRes.status}`)
   const contactRestoreRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({
       contact: {
         talk_enabled: true,
@@ -6359,7 +6382,7 @@ try {
   await waitForContactState(true, true)
   const stringBooleanSaveRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ contact: { talk_enabled: 'false', line_enabled: 'false' }, paypal: { enabled: 'false' } })
   })
   if (!stringBooleanSaveRes.ok) throw new Error(`string boolean site config save failed: ${stringBooleanSaveRes.status}`)
@@ -6368,14 +6391,14 @@ try {
   else throw new Error(`site config string booleans not normalized: ${JSON.stringify({ contact: normalizedBooleanSite.contact, paypal: normalizedBooleanSite.paypal })}`)
   const invalidBooleanConfigRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ contact: { talk_enabled: 'no' }, paypal: { enabled: 'yes' } })
   })
   if (invalidBooleanConfigRes.status === 400) ok('api rejects invalid string boolean site config')
   else throw new Error(`invalid string boolean site config accepted: ${invalidBooleanConfigRes.status}`)
   const stringBooleanRestoreRes = await fetch(`${base}/api/admin/site`, {
     method: 'PUT',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
     body: JSON.stringify({ contact: { talk_enabled: true, line_enabled: true }, paypal: { enabled: true } })
   })
   if (!stringBooleanRestoreRes.ok) throw new Error(`string boolean site config restore failed: ${stringBooleanRestoreRes.status}`)
@@ -6670,11 +6693,11 @@ try {
   fail('e2e run', error)
   await page.screenshot({ path: '/root/pet-wool-platform/test-results/failure.png', fullPage: true }).catch(() => {})
 } finally {
-  await fetch(`${base}/api/admin/site`, { headers: { authorization: 'Bearer admin-e2e' } })
+  await fetch(`${base}/api/admin/site`, { headers: { authorization: `Bearer ${adminTokenCache}` } })
     .then((res) => res.json())
     .then((site) => fetch(`${base}/api/admin/site`, {
       method: 'PUT',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer admin-e2e' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${adminTokenCache}` },
       body: JSON.stringify({
         ...site,
         brand: { ...(site.brand || {}), name: originalBrandName },
@@ -6683,7 +6706,7 @@ try {
     }))
     .catch(() => {})
   if (temporaryProductId) {
-    await fetch(`${base}/api/admin/products/${temporaryProductId}`, { method: 'DELETE', headers: { authorization: 'Bearer admin-e2e', 'x-confirm-delete': 'true' } }).catch(() => {})
+    await fetch(`${base}/api/admin/products/${temporaryProductId}`, { method: 'DELETE', headers: { authorization: `Bearer ${adminTokenCache}`, 'x-confirm-delete': 'true' } }).catch(() => {})
   }
   if (storeSnapshotForMissingPhoto) {
     await restoreMissingPhotoSnapshot().catch(() => {})

@@ -2631,8 +2631,6 @@ function requireAdmin(req) {
   const auth = String(req.headers.authorization || '')
   if (!auth.startsWith('Bearer ')) return false
   const token = auth.slice('Bearer '.length)
-  const remoteAddress = req.socket?.remoteAddress || ''
-  if (token === 'admin-e2e' && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remoteAddress)) return true
   const session = adminSessions.get(token)
   if (!session) return false
   if (session.expires_at < Date.now()) {
@@ -2647,8 +2645,6 @@ function currentAdmin(req) {
   const auth = String(req.headers.authorization || '')
   if (!auth.startsWith('Bearer ')) return null
   const token = auth.slice('Bearer '.length)
-  const remoteAddress = req.socket?.remoteAddress || ''
-  if (token === 'admin-e2e' && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remoteAddress)) return { email: 'admin-e2e@example.com', role: 'owner' }
   const session = adminSessions.get(token)
   return session && session.expires_at >= Date.now() ? session : null
 }

@@ -87,9 +87,31 @@ try {
   else fail('bot answer endpoint', `status=${res.status}`)
 } catch (e) { fail('bot answer endpoint', e.message) }
 
-// --- 管理端与备份（admin-e2e 令牌仅在本机回环有效；否则跳过） ---
+// --- 回归防护：静态/可预测的管理员令牌一律拒绝 ---
+// 历史上 server.mjs 曾对回环地址接受固定的 'admin-e2e' token，等于让前置的
+// 每一层反向代理都变成管理端后门（nginx 反代后所有外部请求都是 127.0.0.1）。
+// 这里固定用一个曾经可用的 token 探测，确保它不再被接受。
 try {
-  const headers = { authorization: 'Bearer admin-e2e' }
+  const bypassRes = await get('/api/admin/overview', { headers: { authorization: 'Bearer admin-e2e' } })
+  if (bypassRes.status === 200 || bypassRes.status === 403) {
+    fail('static admin token rejected', `known bypass token still accepted (status=${bypassRes.status})`)
+  } else {
+    ok('static admin token rejected')
+  }
+} catch (e) { fail('static admin token rejected', e.message) }
+
+// --- 管理端与备份（通过真实登录获取令牌） ---
+try {
+  const loginRes = await fetch(`${base}/api/admin/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      email: process.env.ADMIN_EMAIL || 'admin@example.com',
+      password: process.env.ADMIN_PASSWORD || 'admin123456',
+    }),
+  }).catch(() => null)
+  const loginBody = loginRes ? await loginRes.json().catch(() => ({})) : {}
+  const headers = { authorization: `Bearer ${loginBody.token || ''}` }
   const siteRes = await get('/api/admin/site', { headers })
   if ([401, 403].includes(siteRes.status)) {
     console.log('SKIP admin checks (token invalid from this origin)')
