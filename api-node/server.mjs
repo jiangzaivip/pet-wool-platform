@@ -1,4 +1,4 @@
-import { createHash, createHmac, createPublicKey, randomUUID, timingSafeEqual, verify as verifySignature } from 'node:crypto'
+import { createHash, createHmac, createPublicKey, randomBytes, randomUUID, timingSafeEqual, verify as verifySignature } from 'node:crypto'
 import { createServer } from 'node:http'
 import { connect as connectNet } from 'node:net'
 import { connect as connectTls } from 'node:tls'
@@ -2974,6 +2974,16 @@ function verifyUserToken(token = '') {
   }
 }
 
+// Constant-time comparison that tolerates length mismatches. timingSafeEqual
+// throws on differing lengths, which would turn a wrong secret into a 500
+// instead of a clean denial and leaks the expected length.
+function secretsMatch(presented, expected) {
+  const a = Buffer.from(String(presented || '').trim())
+  const b = Buffer.from(String(expected || '').trim())
+  if (!a.length || !b.length || a.length !== b.length) return false
+  return timingSafeEqual(a, b)
+}
+
 function currentUser(req) {
   const auth = String(req.headers.authorization || '')
   if (!auth.startsWith('Bearer ')) return null
@@ -2983,12 +2993,31 @@ function currentUser(req) {
 // Public order data is filtered by ownership before it is returned. The user
 // token carries the verified email; matching it against the order email avoids
 // treating a client-supplied email query as authorization.
-function validateCustomerOrderAccess(req, order = {}) {
+//
+// Ownership is one of two proofs, never "neither": a verified user token whose
+// email matches the order, or the per-payment capture secret issued when the
+// payment was created. Returning '' for an anonymous caller would let anyone
+// who learned a paypal_order_id read and capture somebody else's order.
+function validateCustomerOrderAccess(req, order = {}, payment = null) {
   const user = currentUser(req)
-  if (!user?.email) return ''
-  return String(user.email || '').trim().toLowerCase() === String(order.email || '').trim().toLowerCase()
-    ? ''
-    : 'order access denied'
+  if (user?.email) {
+    return String(user.email || '').trim().toLowerCase() === String(order.email || '').trim().toLowerCase()
+      ? ''
+      : 'order access denied'
+  }
+  if (secretsMatch(req.headers['x-payment-secret'], payment?.capture_secret)) return ''
+  return 'order access denied'
+}
+
+// Opening the first payment for a freshly created guest order happens before
+// any secret exists, so ownership is proven by the order's own high-entropy
+// client_request_id, which only the creator of the order ever observed. It is
+// compared in constant time and never logged.
+function validateGuestOrderPossession(req, order = {}) {
+  const user = currentUser(req)
+  if (user?.email) return ''
+  if (secretsMatch(req.headers['x-order-secret'], order?.client_request_id)) return ''
+  return 'order access denied'
 }
 
 function validateCustomerReviewInput(input = {}) {
@@ -3134,7 +3163,7 @@ function customerOrder(order = {}, store = {}) {
   }
 }
 
-function publicPayment(payment = {}) {
+function publicPayment(payment = {}, options = {}) {
   if (!payment) return null
   return {
     payment_type: payment.payment_type,
@@ -3144,6 +3173,9 @@ function publicPayment(payment = {}) {
     base_amount_cents: payment.base_amount_cents || 0,
     base_currency: payment.base_currency || '',
     status: payment.status,
+    // Only ever exposed to the buyer: create-order has just proved ownership,
+    // and capture requires it back. Admin and webhook paths omit it.
+    ...(options.includeCaptureSecret ? { capture_secret: payment.capture_secret || '' } : {}),
   }
 }
 
@@ -4738,8 +4770,22 @@ async function handle(req, res) {
     if (!order) return send(res, 404, { message: 'order not found' }, privateNoStoreHeaders)
     const user = currentUser(req)
     if (user?.email && isBlockedEmail(store, user.email)) return send(res, 403, { message: 'user blocked' }, privateNoStoreHeaders)
-    const accessValidation = validateCustomerOrderAccess(req, order)
-    if (accessValidation) return send(res, 403, { message: accessValidation }, privateNoStoreHeaders)
+    // A retry of an in-flight payment must stay available to the original buyer,
+    // so the existing payment record (and its secret) is resolved before
+    // ownership is validated.
+    const reusablePayment = store.payments.find((p) => p.order_id === order.id
+      && p.provider === 'paypal'
+      && p.status === 'created'
+      && p.payment_type === payableType(order)
+      && paymentBaseAmountCents(p, order) === payableAmount(order))
+    // Either proof grants access; only when every proof fails is it denied.
+    // Note this cannot be expressed with || or find(Boolean): both would stop
+    // at the first non-empty denial and reject a caller that holds a valid
+    // proof for the other check.
+    const accessProofs = [validateCustomerOrderAccess(req, order, reusablePayment), validateGuestOrderPossession(req, order)]
+    if (accessProofs.every((denial) => Boolean(denial))) {
+      return send(res, 403, { message: 'order access denied' }, privateNoStoreHeaders)
+    }
     const paypalCurrency = paypalConfig(store.site).currency
     // Orders are stored in the product currency (KRW base); the PayPal charge
     // currency comes from the site config. Currencies only need to be
@@ -4788,7 +4834,7 @@ async function handle(req, res) {
         id: existingPayment.paypal_order_id,
         approve_url: existingPayment.paypal_approve_url || '',
         mock: existingPayment.paypal_mock === true || String(existingPayment.paypal_order_id || '').startsWith('PAYPAL-'),
-        payment: publicPayment(existingPayment),
+        payment: publicPayment(existingPayment, { includeCaptureSecret: true }),
         order: publicOrder(order),
       }, privateNoStoreHeaders)
     }
@@ -4804,6 +4850,10 @@ async function handle(req, res) {
       paypal_status: '',
       paypal_capture_status: '',
       paypal_mock: useMockPaypal,
+      // High-entropy per-payment secret. Guests never present a user token, so
+      // this is what proves the caller is the buyer who opened this payment
+      // rather than anyone who guessed or observed a PayPal order id.
+      capture_secret: randomBytes(24).toString('base64url'),
       ...amountSnapshot,
       status: 'created',
       created_at: now(),
@@ -4864,7 +4914,7 @@ async function handle(req, res) {
       id: payment.paypal_order_id,
       approve_url: payment.paypal_approve_url || '',
       mock: payment.paypal_mock === true,
-      payment: publicPayment(payment),
+      payment: publicPayment(payment, { includeCaptureSecret: true }),
       order: publicOrder(order),
     }, privateNoStoreHeaders)
   }
@@ -4875,7 +4925,7 @@ async function handle(req, res) {
     if (!payment) {
       const existingOrder = store.orders.find((o) => o.paypal_order_id === input.paypal_order_id)
       if (existingOrder && existingOrder.payment_status === 'paid') {
-        const accessValidation = validateCustomerOrderAccess(req, existingOrder)
+        const accessValidation = validateCustomerOrderAccess(req, existingOrder, store.payments.find((p) => p.order_id === existingOrder.id))
         if (accessValidation) return send(res, 403, { message: accessValidation }, privateNoStoreHeaders)
         return send(res, 200, { status: 'COMPLETED', payment: null, order: publicOrder(existingOrder) }, privateNoStoreHeaders)
       }
@@ -4885,7 +4935,7 @@ async function handle(req, res) {
     if (!order) return send(res, 404, { message: 'order not found' }, privateNoStoreHeaders)
     const user = currentUser(req)
     if (user?.email && isBlockedEmail(store, user.email)) return send(res, 403, { message: 'user blocked' }, privateNoStoreHeaders)
-    const accessValidation = validateCustomerOrderAccess(req, order)
+    const accessValidation = validateCustomerOrderAccess(req, order, payment)
     if (accessValidation) return send(res, 403, { message: accessValidation }, privateNoStoreHeaders)
     if (payment.status === 'captured') {
       return send(res, 200, { status: 'COMPLETED', payment: publicPayment(payment), order: publicOrder(order) }, privateNoStoreHeaders)

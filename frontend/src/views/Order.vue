@@ -652,10 +652,13 @@ function resetPaypalButtons() {
 }
 
 async function captureApprovedPaypalOrder(paypalOrderId = paypalOrder.value?.id) {
+  const captureSecret = safeGetLocalStorage('payment_capture_secret')
   const result = await api<any>('/paypal/capture-order', {
     method: 'POST',
+    headers: captureSecret ? { 'x-payment-secret': captureSecret } : {},
     body: JSON.stringify({ paypal_order_id: paypalOrderId })
   })
+  safeRemoveLocalStorage('payment_capture_secret')
   adoptServerOrderSummary(result.order)
   paypalOrder.value = null
   resetPaypalButtons()
@@ -663,14 +666,24 @@ async function captureApprovedPaypalOrder(paypalOrderId = paypalOrder.value?.id)
 }
 
 async function requestPaypalOrder(orderId: string) {
-  return api<any>('/paypal/create-order', {
+  // Guests hold no user token, so the first payment is authorised by the
+  // order's own client_request_id, which this browser generated and kept in
+  // the local draft. Signed-in customers are matched by email instead.
+  const orderSecret = String(form.client_request_id || '').trim()
+  const result = await api<any>('/paypal/create-order', {
     method: 'POST',
+    headers: orderSecret ? { 'x-order-secret': orderSecret } : {},
     body: JSON.stringify({
       order_id: orderId,
       return_path: '/order?paypal_return=1',
       cancel_path: '/order?paypal_cancel=1',
     })
   })
+  // Persist the capture secret before leaving for PayPal so the return leg can
+  // prove ownership even for guests, who never have a user token.
+  const captureSecret = String(result?.payment?.capture_secret || '')
+  if (captureSecret) safeSetLocalStorage('payment_capture_secret', captureSecret)
+  return result
 }
 
 async function retryPaypalPayment() {
@@ -841,10 +854,16 @@ async function capturePaypalReturn() {
   if (!paypalOrderId) return
   loading.value = true
   try {
+    // Guests have no user token, so the server issues a per-payment secret when
+    // the payment is created. It survives the PayPal round trip through
+    // sessionStorage and proves this browser opened this payment.
+    const captureSecret = safeGetLocalStorage('payment_capture_secret')
     const result = await api<any>('/paypal/capture-order', {
       method: 'POST',
+      headers: captureSecret ? { 'x-payment-secret': captureSecret } : {},
       body: JSON.stringify({ paypal_order_id: paypalOrderId })
     })
+    safeRemoveLocalStorage('payment_capture_secret')
     order.value = result.order
     paypalOrder.value = null
     showOrderMessage(t('order.paid', { orderNo: order.value.order_no }), 'success')
