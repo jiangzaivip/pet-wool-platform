@@ -8,6 +8,15 @@ echo "Checking public site: ${BASE_URL}"
 curl -fsSI "${BASE_URL}/" >/dev/null
 curl -fsSI "${BASE_URL}/blog" >/dev/null
 curl -fsSI "${BASE_URL}/support" >/dev/null
+ROBOTS_HEADERS="$(curl -fsSI "${BASE_URL}/robots.txt")"
+SITEMAP_HEADERS="$(curl -fsSI "${BASE_URL}/sitemap.xml")"
+curl -fsS "${BASE_URL}/robots.txt" | grep -F "Sitemap: " >/dev/null
+curl -fsS "${BASE_URL}/sitemap.xml" | grep -F "<urlset" >/dev/null
+node -e '
+const [robots, sitemap] = process.argv.slice(1)
+if (!robots.includes("text/plain")) throw new Error("robots.txt content type is invalid")
+if (!/application\/xml|text\/xml/.test(sitemap)) throw new Error("sitemap.xml content type is invalid")
+' "${ROBOTS_HEADERS}" "${SITEMAP_HEADERS}"
 PUBLIC_HEADERS="$(curl -fsSI "${BASE_URL}/")"
 DOC_HEADERS="$(curl -fsSI "${BASE_URL}/doc/")"
 node -e '
@@ -32,6 +41,16 @@ for (const required of [
 ' "${DOC_HEADERS}"
 
 echo "Checking API: ${API_URL}"
+# Unknown frontend paths must 404. On the test topology nginx only proxies
+# /api,/uploads,/health to the API and forwards everything else to Vite (which
+# serves the SPA with 200), so probe the API origin directly. In production the
+# API serves the frontend itself, where API_URL is the same origin.
+API_ORIGIN="${API_ORIGIN:-${API_URL}}"
+NOT_FOUND_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' "${API_ORIGIN}/abc-test-404-987654321")"
+if [ "${NOT_FOUND_STATUS}" != "404" ]; then
+  echo "Expected an unknown frontend URL to return HTTP 404, got ${NOT_FOUND_STATUS}." >&2
+  exit 1
+fi
 HEALTH_JSON="$(curl -fsS "${API_URL}/health")"
 node -e '
 const health = JSON.parse(process.argv[1])

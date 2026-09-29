@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /account
+Disallow: /order
+Disallow: /api/
+Disallow: /uploads/
+
+Sitemap: https://woolbuddy.shop/sitemap.xml

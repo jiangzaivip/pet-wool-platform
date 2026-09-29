@@ -2,6 +2,7 @@ import { createHash, createHmac, createPublicKey, randomUUID, timingSafeEqual, v
 import { createServer } from 'node:http'
 import { connect as connectNet } from 'node:net'
 import { connect as connectTls } from 'node:tls'
+import { gzipSync } from 'node:zlib'
 import { mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { createWriteStream, existsSync, readFileSync } from 'node:fs'
 import pg from 'pg'
@@ -356,6 +357,11 @@ const siteCopy = {
         excerpt: '了解哪些宠物照片能帮助手作师还原眼神、毛色、姿势和性格。',
         content: '一件好的定制宠物肖像从清晰参考图开始。建议准备正面、侧面、背面和全身照片，并补充眼睛、耳朵、尾巴、脚掌和毛色花纹特写。如果是纪念礼物，请加入最能代表家人记忆的表情照片。',
       },
+      en: {
+        title: 'How to Choose Photos for a Custom 3D Pet Portrait',
+        excerpt: 'Learn which pet photos help artists capture eyes, coat color, pose and personality for a custom wool portrait.',
+        content: 'A good custom pet portrait starts with clear references. Prepare front, side, back and full-body photos. Add close-ups of eyes, ears, tail, paws and coat markings. If the portrait is a memorial gift, include the expression that feels most familiar to your family.',
+      },
       ko: {
         title: '맞춤 3D 반려동물 초상 사진 고르는 법',
         excerpt: '눈빛, 털색, 자세와 성격을 살리는 데 도움이 되는 사진을 안내합니다.',
@@ -368,6 +374,11 @@ const siteCopy = {
         excerpt: '如何在纪念相框、全身肖像和纪念摆件之间选择。',
         content: '宠物纪念礼物应该私人、安静并且适合长期保存。3D 羊毛毡相框适合放在书架或桌面，全身肖像能保留宠物熟悉的姿态和轮廓。可以根据家人最常想起宠物的方式来选择形式。',
       },
+      en: {
+        title: 'Pet Memorial Gift Ideas for Families',
+        excerpt: 'A practical guide to choosing a pet memorial frame, full body portrait or keepsake gift.',
+        content: 'Pet memorial gifts should feel personal and calm. A 3D felted frame is suitable for display on a shelf, while a full body portrait keeps the pet’s posture and shape. Choose the format based on how the family remembers the pet most clearly.',
+      },
       ko: {
         title: '가족을 위한 반려동물 추모 선물 아이디어',
         excerpt: '추모 액자, 전신 초상, 기념 소품 중 어떤 형식이 맞는지 안내합니다.',
@@ -379,6 +390,11 @@ const siteCopy = {
         title: '羊毛毡宠物肖像护理指南',
         excerpt: '如何避免手工羊毛毡作品受潮、暴晒和变形。',
         content: '羊毛毡宠物肖像是手工纪念作品。请避免水洗、强光暴晒和频繁触摸，条件允许时放入展示盒保存。如果表面出现少量浮毛，请用小剪刀轻轻修整，不要用手拉扯。',
+      },
+      en: {
+        title: 'Care Guide for Wool Felt Pet Portraits',
+        excerpt: 'How to protect handmade wool felt portraits from moisture, sunlight and deformation.',
+        content: 'Wool felt portraits are handmade keepsakes. Keep them away from water, strong sunlight and frequent touching. Use a display box when possible. If tiny fibers appear on the surface, trim gently with small scissors instead of pulling.',
       },
       ko: {
         title: '양모 펠트 반려동물 초상 관리법',
@@ -1127,7 +1143,6 @@ function defaultSiteContent() {
 }
 
 function shouldReplaceLegacyReviewSeed(reviews = []) {
-  if (!Array.isArray(reviews) || reviews.length !== 3) return false
   const legacyNames = new Set(['Mia R.', 'Hana K.', 'Emily C.'])
   const legacyTitles = new Set([
     'The face looks just like my dog.',
@@ -1137,12 +1152,27 @@ function shouldReplaceLegacyReviewSeed(reviews = []) {
     'Beautiful full body detail.',
     'Beautiful full-body details.',
   ])
-  return reviews.every((review) => legacyNames.has(String(review?.name || '').trim())
-    && legacyTitles.has(String(review?.title || '').trim())
-    && (!Array.isArray(review?.images) || review.images.length === 0)
-    && !String(review?.avatar_url || '').trim()
-    && !String(review?.pet_image || '').trim()
-    && !String(review?.work_image || '').trim())
+  const matches = (review) => legacyNames.has(String(review?.name || '').trim())
+    && (legacyTitles.has(String(review?.title || '').trim())
+      || legacyTitles.has(String(review?.translations?.en?.title || '').trim()))
+  // Legacy 3-review seed: either the original English-titled entries, or the
+  // newer shape where admin save backfilled every translation with the same
+  // Chinese text (monolingual translations => the storefront shows Chinese on
+  // the English/Korean sites). In both shapes media fields are empty.
+  const monoChinese = (review) => {
+    const entries = Object.values(review?.translations || {})
+      .map((entry) => String(entry?.title || '').trim())
+      .filter(Boolean)
+    if (!entries.length) return false
+    if (new Set(entries).size !== 1) return false
+    return /[\u4e00-\u9fff]/.test(entries[0])
+  }
+  return Array.isArray(reviews) && reviews.length === 3
+    && reviews.every((review) => matches(review) || monoChinese(review))
+    && reviews.every((review) => !Array.isArray(review?.images) || review.images.length === 0)
+    && reviews.every((review) => !String(review?.avatar_url || '').trim()
+      && !String(review?.pet_image || '').trim()
+      && !String(review?.work_image || '').trim())
 }
 
 function seedStore() {
@@ -1281,7 +1311,14 @@ function migrateStore(store) {
     theme: normalizeThemeConfig(store.site?.theme || seeded.site.theme),
     policies: { ...content.policies, ...(store.site?.policies || {}) },
     faq: store.site?.faq?.length ? store.site.faq : content.faq,
-    reviews: shouldReplaceLegacyReviewSeed(store.site?.reviews) ? content.reviews : (store.site?.reviews?.length ? store.site.reviews : content.reviews),
+    reviews: (() => {
+      const existingReviews = store.site?.reviews
+      if (shouldReplaceLegacyReviewSeed(existingReviews)) {
+        changed = true
+        return content.reviews
+      }
+      return existingReviews?.length ? existingReviews : content.reviews
+    })(),
     socials: { ...content.socials, ...(store.site?.socials || {}) },
     taxonomies: {
       occasions: Array.isArray(store.site?.taxonomies?.occasions) ? store.site.taxonomies.occasions : content.taxonomies.occasions,
@@ -1422,12 +1459,90 @@ const staticMimeTypes = {
   '.webp': 'image/webp',
   '.ico': 'image/x-icon',
   '.txt': 'text/plain; charset=utf-8',
+  '.xml': 'application/xml; charset=utf-8',
   '.map': 'application/json; charset=utf-8',
 }
 
 function send(res, status, body, headers = {}) {
   res.writeHead(status, { ...securityHeaders, 'content-type': 'application/json; charset=utf-8', ...headers })
   res.end(JSON.stringify(body))
+}
+
+function sendText(req, res, status, body, headers = {}) {
+  res.writeHead(status, { ...frontendSecurityHeaders, 'content-type': 'text/plain; charset=utf-8', ...headers })
+  if (req.method === 'HEAD') return res.end()
+  res.end(body)
+}
+
+function sendXml(req, res, status, body, headers = {}) {
+  res.writeHead(status, { ...frontendSecurityHeaders, 'content-type': 'application/xml; charset=utf-8', ...headers })
+  if (req.method === 'HEAD') return res.end()
+  res.end(body)
+}
+
+function xmlEscape(value = '') {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+}
+
+function sitemapUrl(origin, pathname) {
+  return `  <url><loc>${xmlEscape(new URL(pathname, `${origin}/`).toString())}</loc></url>`
+}
+
+function buildRobots(origin) {
+  return [
+    'User-agent: *',
+    'Allow: /',
+    'Disallow: /admin',
+    'Disallow: /account',
+    'Disallow: /order',
+    'Disallow: /api/',
+    'Disallow: /uploads/',
+    '',
+    `Sitemap: ${new URL('/sitemap.xml', `${origin}/`).toString()}`,
+    '',
+  ].join('\n')
+}
+
+function buildSitemap(store, origin) {
+  const urls = new Set([
+    '/',
+    '/collections',
+    '/support',
+    '/blog',
+    '/policies/privacy',
+    '/policies/terms',
+    '/policies/refund',
+    '/policies/shipping',
+    '/policies/cookies',
+    '/doc/',
+  ])
+  const publicCategories = (store.categories || []).filter((category) => category.status !== 'hidden')
+  for (const category of publicCategories) {
+    if (category.slug) urls.add(`/collections/${encodeURIComponent(category.slug)}`)
+    for (const child of category.children || []) {
+      if (child.slug) urls.add(`/collections/${encodeURIComponent(child.slug)}`)
+    }
+  }
+  for (const product of store.products || []) {
+    if (product.slug && isPublicOrderableProduct(product, publicCategories)) {
+      urls.add(`/products/${encodeURIComponent(product.slug)}`)
+    }
+  }
+  for (const post of store.site?.blog || []) {
+    if (post.slug && post.status !== 'hidden') urls.add(`/blog/${encodeURIComponent(post.slug)}`)
+  }
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+    ...Array.from(urls, (pathname) => sitemapUrl(origin, pathname)),
+    '</urlset>',
+    '',
+  ].join('\n')
 }
 
 function sendError(res, error) {
@@ -1454,23 +1569,100 @@ function isPathInside(parent, target) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }
 
-async function sendStaticFile(req, res, filePath, cacheControl) {
+// Compressible static asset types get on-the-fly gzip with a small in-memory
+// cache keyed by path+mtime+size, so unchanged assets are compressed once.
+const staticGzipCache = new Map()
+const staticGzipTypes = new Set(['.js', '.mjs', '.css', '.svg', '.json', '.xml', '.txt', '.html', '.map'])
+
+function acceptsGzip(req) {
+  return String(req.headers['accept-encoding'] || '').toLowerCase().includes('gzip')
+}
+
+async function sendStaticFile(req, res, filePath, cacheControl, status = 200) {
   try {
     const body = await readFile(filePath)
     const ext = path.extname(filePath).toLowerCase()
-    res.writeHead(200, {
+    const contentType = staticMimeTypes[ext] || 'application/octet-stream'
+    let payload = body
+    const headers = {
       ...frontendSecurityHeaders,
       'content-type': staticMimeTypes[ext] || 'application/octet-stream',
       'cache-control': cacheControl,
-    })
+      ...(status === 404 ? { 'x-robots-tag': 'noindex' } : {}),
+    }
+    if (req.method !== 'HEAD' && status === 200 && staticGzipTypes.has(ext) && acceptsGzip(req) && body.length > 1024) {
+      try {
+        const fileStat = await stat(filePath)
+        const cacheKey = `${filePath}:${fileStat.mtimeMs}:${fileStat.size}`
+        let gzipped = staticGzipCache.get(cacheKey)
+        if (!gzipped) {
+          gzipped = gzipSync(body)
+          if (staticGzipCache.size > 200) staticGzipCache.clear()
+          staticGzipCache.set(cacheKey, gzipped)
+        }
+        payload = gzipped
+        headers['content-encoding'] = 'gzip'
+        headers.vary = 'Accept-Encoding'
+      } catch { /* stat 失败则按未压缩返回 */ }
+    }
+    res.writeHead(status, headers)
     if (req.method === 'HEAD') return res.end()
-    return res.end(body)
+    return res.end(payload)
   } catch {
     return send(res, 404, { message: 'file not found' })
   }
 }
 
-async function sendFrontendFile(req, res, pathname = '/') {
+function isKnownFrontendRoute(pathname, store) {
+  let decoded = ''
+  try {
+    decoded = decodeURIComponent(pathname)
+  } catch {
+    return false
+  }
+  if (decoded.includes('\0') || decoded.includes('\\')) return false
+
+  const normalized = decoded.length > 1 ? decoded.replace(/\/+$/, '') : decoded
+  if ([
+    '/',
+    '/collections',
+    '/support',
+    '/blog',
+    '/doc',
+    '/order',
+    '/account',
+    '/admin',
+    '/admin/dashboard',
+  ].includes(normalized)) return true
+
+  const policyMatch = normalized.match(/^\/policies\/([^/]+)$/)
+  if (policyMatch && ['privacy', 'terms', 'refund', 'shipping', 'cookies'].includes(policyMatch[1])) return true
+
+  const publicCategories = (store?.categories || []).filter((category) => category.status !== 'hidden')
+  const collectionMatch = normalized.match(/^\/collections\/([^/]+)$/)
+  if (collectionMatch) {
+    const slug = collectionMatch[1]
+    return publicCategories.some((category) => category.slug === slug
+      || category.id === slug
+      || category.children?.some((child) => child.slug === slug))
+  }
+
+  const productMatch = normalized.match(/^\/products\/([^/]+)$/)
+  if (productMatch) {
+    const product = (store?.products || []).find((item) => item.slug === productMatch[1] || item.id === productMatch[1])
+    return Boolean(product && isPublicOrderableProduct(product, publicCategories))
+  }
+
+  const blogMatch = normalized.match(/^\/blog\/([^/]+)$/)
+  if (blogMatch) {
+    return (store?.site?.blog || []).some((post) => post.slug === blogMatch[1] || post.id === blogMatch[1])
+  }
+
+  // The docs view intentionally owns arbitrary paths below /doc/.
+  return normalized.startsWith('/doc/')
+}
+
+async function sendFrontendFile(req, res, pathname = '/', status = 200) {
   if (!serveFrontend) return send(res, 404, { message: 'not found' })
   if (!['GET', 'HEAD'].includes(req.method || 'GET')) return send(res, 404, { message: 'not found' })
   if (/%2f|%5c/i.test(pathname)) return send(res, 404, { message: 'file not found' })
@@ -1488,6 +1680,7 @@ async function sendFrontendFile(req, res, pathname = '/') {
   if (!isPathInside(frontendDistDir, candidate)) return send(res, 404, { message: 'file not found' })
 
   let filePath = candidate
+  let isSpaFallback = false
   let fileStat = null
   try {
     fileStat = await stat(filePath)
@@ -1498,14 +1691,16 @@ async function sendFrontendFile(req, res, pathname = '/') {
   if (!fileStat || !fileStat.isFile()) {
     if (decoded.startsWith('/assets/') || path.extname(decoded)) return send(res, 404, { message: 'file not found' })
     filePath = path.join(frontendDistDir, 'index.html')
+    isSpaFallback = true
   }
 
+  const responseStatus = isSpaFallback ? status : 200
   const cacheControl = path.basename(filePath) === 'index.html'
     ? 'no-cache'
     : decoded.startsWith('/assets/')
       ? 'public, max-age=31536000, immutable'
       : 'public, max-age=3600'
-  return sendStaticFile(req, res, filePath, cacheControl)
+  return sendStaticFile(req, res, filePath, cacheControl, responseStatus)
 }
 
 function sendUploadFile(res, pathname = '') {
@@ -3070,7 +3265,15 @@ function applyProductCopy(product, lang) {
 function applySiteCopy(site, lang) {
   const reviews = (site.reviews || []).map((review) => {
     const key = review.translations?.en?.title || review.title
-    const copy = siteCopy.reviews[key]?.[lang]
+    const directEntry = siteCopy.reviews[key]
+    const matchedEntry = directEntry || Object.values(siteCopy.reviews).find((entry) => {
+      const localizedValues = Object.values(entry || {})
+      return localizedValues.some((copy) => (
+        String(copy?.title || '').trim() === String(review.title || '').trim()
+        || String(copy?.content || '').trim() === String(review.content || '').trim()
+      ))
+    })
+    const copy = matchedEntry?.[lang]
     return copy ? { ...review, ...copy, country: termValue(review.country, lang) } : { ...review, country: termValue(review.country, lang) }
   })
   const blog = (site.blog || []).map((post) => {
@@ -4198,7 +4401,18 @@ async function handle(req, res) {
     })
   }
   if (isRead && url.pathname.startsWith('/uploads/')) return sendUploadFile(res, url.pathname)
-  if (!url.pathname.startsWith('/api')) return sendFrontendFile(req, res, url.pathname)
+  if (isRead && url.pathname === '/robots.txt') {
+    return sendText(req, res, 200, buildRobots(publicOriginFromRequest(req)), { 'cache-control': 'public, max-age=3600' })
+  }
+  if (isRead && url.pathname === '/sitemap.xml') {
+    const store = await loadStore()
+    return sendXml(req, res, 200, buildSitemap(store, publicOriginFromRequest(req)), { 'cache-control': 'public, max-age=300' })
+  }
+  if (!url.pathname.startsWith('/api')) {
+    const store = await loadStore()
+    const status = isRead && isKnownFrontendRoute(url.pathname, store) ? 200 : 404
+    return sendFrontendFile(req, res, url.pathname, status)
+  }
 
   const store = await loadStore()
   const route = url.pathname.slice(4) || '/'

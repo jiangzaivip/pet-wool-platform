@@ -8,7 +8,8 @@
     "smoke": "bash scripts/smoke-check.sh",
     "export:postgres": "node scripts/export-store-postgres.mjs",
     "production:check": "node scripts/production-check.mjs",
-    "production:paypal-check": "node scripts/paypal-live-check.mjs"
+    "production:paypal-check": "node scripts/paypal-live-check.mjs",
+    "verify:core": "node scripts/verify-core.mjs"
   },
   "devDependencies": {
     "playwright": "^1.61.1"
