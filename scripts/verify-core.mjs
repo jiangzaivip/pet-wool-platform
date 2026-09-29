@@ -232,6 +232,24 @@ if (process.env.SKIP_BROWSER !== '1') {
   } catch (e) { fail('browser smoke', e.message) }
 }
 
+// --- 发布清单：server.mjs 依赖的每个本地模块都必须随包发布 ---
+// RELEASE_FILES in deploy.sh is an explicit list, so a new api-node/*.mjs is
+// simply not deployed. server.mjs then fails to boot on the target host with a
+// module-not-found error — which happened with shipping.mjs and
+// client-reports.mjs before this check existed.
+{
+  const { readdir, readFile } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const deploySh = await readFile(join(rootDir, 'deploy.sh'), 'utf8')
+  const modules = (await readdir(join(rootDir, 'api-node'))).filter((f) => f.endsWith('.mjs'))
+  const missing = modules.filter((name) => !deploySh.includes(`api-node/${name}`))
+  if (missing.length) {
+    fail('deploy release list', `api-node module(s) missing from deploy.sh RELEASE_FILES: ${missing.join(', ')}`)
+  } else {
+    ok(`deploy release list covers all ${modules.length} api-node modules`)
+  }
+}
+
 const seconds = ((Date.now() - started) / 1000).toFixed(1)
 console.log(`\nCore gate: ${passed} passed, ${failures.length} failed, ${seconds}s`)
 if (failures.length) {

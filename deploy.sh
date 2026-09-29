@@ -68,6 +68,8 @@ RELEASE_FILES=(
   api-node/server.mjs
   api-node/currency.mjs
   api-node/payment-amounts.mjs
+  api-node/shipping.mjs
+  api-node/client-reports.mjs
   frontend/src/currency.ts
   scripts/backup-data.mjs
   scripts/backup-sql.mjs
@@ -84,6 +86,13 @@ RELEASE_FILES=(
   scripts/verify-core.mjs
   scripts/verify-i18n.mjs
   scripts/verify-admin-console.mjs
+  # server.mjs statically imports shipping.mjs and client-reports.mjs; leaving
+  # either out of the release makes the API fail to boot on the target host.
+  scripts/verify-module-imports.mjs
+  # Self-contained: spins up its own API against a temp store, so it can run on
+  # the target host to prove the release actually boots and settles payments.
+  scripts/verify-payment-amounts.mjs
+  scripts/verify-webhook-idempotency.mjs
   # verify-production-start-check.mjs is intentionally NOT published: it rewrites
   # the project .env while probing refusal cases, which has no place on a host
   # that holds live credentials. It runs from the development machine instead.
