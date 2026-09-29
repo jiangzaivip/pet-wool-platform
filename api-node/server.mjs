@@ -5483,7 +5483,49 @@ async function handle(req, res) {
     }
   }
 
-  if (req.method === 'GET' && route === '/admin/orders') return send(res, 200, store.orders.map((order) => adminOrder(order, store)))
+  if (req.method === 'GET' && route === '/admin/orders') {
+    // Paged on purpose. The console previously received every order with its
+    // full customer record, shipping address and photo URLs in one response,
+    // which grew past half a megabyte of PII and made each admin page load wait
+    // on the whole history. ?page=1&page_size=50 returns one window plus the
+    // counts the console needs for its pager; omitting the query keeps the old
+    // full-array shape so nothing breaks mid-migration.
+    const pageSizeRaw = Number(url.searchParams.get('page_size') || 0)
+    const pageRaw = Number(url.searchParams.get('page') || 0)
+    const wantsPaging = Number.isFinite(pageSizeRaw) && pageSizeRaw > 0
+    const list = store.orders.map((order) => adminOrder(order, store))
+    if (!wantsPaging) return send(res, 200, list)
+    const pageSize = Math.min(Math.max(Math.trunc(pageSizeRaw), 1), 200)
+    const total = list.length
+    const totalPages = Math.max(1, Math.ceil(total / pageSize))
+    const page = Math.min(Math.max(Math.trunc(Number.isFinite(pageRaw) ? pageRaw : 1), 1), totalPages)
+    const start = (page - 1) * pageSize
+    // The console's action-queue cards count across the whole history, so a
+    // paged response has to carry those totals. Counting them client-side would
+    // silently turn them into "how many are on this page".
+    const counts = {
+      flagged: 0,
+      unpaid: 0,
+      balance_due: 0,
+      preview: 0,
+      ready_ship: 0,
+    }
+    for (const order of store.orders) {
+      if (order.flagged) counts.flagged++
+      if (order.payment_status === 'unpaid') counts.unpaid++
+      if (order.payment_status === 'balance_due' || order.order_status === 'balance_due') counts.balance_due++
+      if (order.order_status === 'preview') counts.preview++
+      if (order.order_status === 'ready_ship') counts.ready_ship++
+    }
+    return send(res, 200, {
+      items: list.slice(start, start + pageSize),
+      page,
+      page_size: pageSize,
+      total,
+      total_pages: totalPages,
+      counts,
+    })
+  }
   const adminOrderMatch = route.match(/^\/admin\/orders\/([^/]+)(?:\/(status|payment|note|flag))?$/)
   if (adminOrderMatch) {
     const order = store.orders.find((o) => o.id === adminOrderMatch[1])

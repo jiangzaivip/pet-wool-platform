@@ -189,7 +189,7 @@ const actionQueueItems = computed(() => [
     key: 'flagged',
     label: t('admin.queueFlagged'),
     desc: t('admin.queueFlaggedDesc'),
-    value: orders.value.filter((order: any) => order.flagged).length,
+    value: orderCounts.value ? orderCounts.value.flagged : orders.value.filter((order: any) => order.flagged).length,
     tone: 'danger',
     filter: () => {
       orderFlagFilter.value = 'flagged'
@@ -202,7 +202,7 @@ const actionQueueItems = computed(() => [
     key: 'unpaid',
     label: t('admin.queueUnpaid'),
     desc: t('admin.queueUnpaidDesc'),
-    value: orders.value.filter((order: any) => order.payment_status === 'unpaid').length,
+    value: orderCounts.value ? orderCounts.value.unpaid : orders.value.filter((order: any) => order.payment_status === 'unpaid').length,
     tone: 'warn',
     filter: () => {
       orderFlagFilter.value = ''
@@ -215,7 +215,7 @@ const actionQueueItems = computed(() => [
     key: 'balance',
     label: t('admin.queueBalanceDue'),
     desc: t('admin.queueBalanceDueDesc'),
-    value: orders.value.filter((order: any) => order.payment_status === 'balance_due' || order.order_status === 'balance_due').length,
+    value: orderCounts.value ? orderCounts.value.balance_due : orders.value.filter((order: any) => order.payment_status === 'balance_due' || order.order_status === 'balance_due').length,
     tone: 'warn',
     filter: () => {
       orderFlagFilter.value = ''
@@ -228,7 +228,7 @@ const actionQueueItems = computed(() => [
     key: 'preview',
     label: t('admin.queuePreview'),
     desc: t('admin.queuePreviewDesc'),
-    value: orders.value.filter((order: any) => order.order_status === 'preview').length,
+    value: orderCounts.value ? orderCounts.value.preview : orders.value.filter((order: any) => order.order_status === 'preview').length,
     tone: 'info',
     filter: () => {
       orderFlagFilter.value = ''
@@ -241,7 +241,7 @@ const actionQueueItems = computed(() => [
     key: 'ship',
     label: t('admin.queueReadyShip'),
     desc: t('admin.queueReadyShipDesc'),
-    value: orders.value.filter((order: any) => order.order_status === 'ready_ship').length,
+    value: orderCounts.value ? orderCounts.value.ready_ship : orders.value.filter((order: any) => order.order_status === 'ready_ship').length,
     tone: 'ok',
     filter: () => {
       orderFlagFilter.value = ''
@@ -2620,12 +2620,69 @@ async function refreshProducts() {
   products.value = await api<Product[]>('/admin/products')
 }
 
+// The list endpoint is paged: the whole history is over half a megabyte of
+// customer PII and photo URLs, and the console used to wait for all of it on
+// every refresh. Browsing is paged; as soon as a keyword or status filter is
+// active the full set is fetched instead, so search still covers every order
+// rather than only the current page.
+const orderSearchActive = () => Boolean(
+  orderSearch.value
+  || orderStatusFilter.value
+  || paymentStatusFilter.value
+  || orderFlagFilter.value
+)
+const orderTotal = ref(0)
+const orderTotalPages = ref(1)
+// Server-side totals for the action-queue cards; null means "not loaded yet", in
+// which case the cards fall back to counting the visible page.
+const orderCounts = ref<Record<string, number> | null>(null)
+// Server-side window over the whole order history. The existing orderPage /
+// pageSize pair still slices whatever set is currently in memory (used by the
+// users, products and blog tabs, and by search results), so this one keeps a
+// distinct name on purpose.
+const orderServerPage = ref(1)
+const orderPageSize = ref(50)
+const ordersLoading = ref(false)
+
 async function refreshOrders() {
-  const orderData = await api<Order[]>('/admin/orders')
-  orders.value = orderData.map(order => preserveOrderNote(order, orderNoteDrafts))
-  if (selectedOrder.value) {
-    selectedOrder.value = orders.value.find(order => order.id === selectedOrder.value?.id) || selectedOrder.value
+  ordersLoading.value = true
+  try {
+    if (orderSearchActive()) {
+      const all = await api<Order[]>('/admin/orders')
+      orders.value = all.map(order => preserveOrderNote(order, orderNoteDrafts))
+      orderTotal.value = all.length
+      orderTotalPages.value = 1
+      orderServerPage.value = 1
+      // Every order is in hand here, so the cards can count locally again.
+      orderCounts.value = {
+        flagged: all.filter((order: any) => order.flagged).length,
+        unpaid: all.filter((order: any) => order.payment_status === 'unpaid').length,
+        balance_due: all.filter((order: any) => order.payment_status === 'balance_due' || order.order_status === 'balance_due').length,
+        preview: all.filter((order: any) => order.order_status === 'preview').length,
+        ready_ship: all.filter((order: any) => order.order_status === 'ready_ship').length,
+      }
+    } else {
+      const data = await api<any>(`/admin/orders?page=${orderServerPage.value}&page_size=${orderPageSize.value}`)
+      const items = Array.isArray(data) ? data : data.items || []
+      orders.value = items.map((order: any) => preserveOrderNote(order, orderNoteDrafts))
+      orderTotal.value = Array.isArray(data) ? data.length : data.total || 0
+      orderTotalPages.value = Array.isArray(data) ? 1 : data.total_pages || 1
+      orderServerPage.value = Array.isArray(data) ? 1 : data.page || 1
+      orderCounts.value = Array.isArray(data) ? null : data.counts || null
+    }
+    if (selectedOrder.value) {
+      selectedOrder.value = orders.value.find(order => order.id === selectedOrder.value?.id) || selectedOrder.value
+    }
+  } finally {
+    ordersLoading.value = false
   }
+}
+
+async function goToOrderPage(page: number) {
+  const target = Math.min(Math.max(1, Math.trunc(Number(page) || 1)), Math.max(1, orderTotalPages.value))
+  if (target === orderServerPage.value) return
+  orderServerPage.value = target
+  await refreshOrders()
 }
 
 async function refreshAdminTables(...parts: Array<'overview' | 'users' | 'categories' | 'products' | 'orders' | 'audit'>) {
@@ -3482,7 +3539,15 @@ onUnmounted(() => {
 })
 watch([userSearch, userStatusFilter], () => { userPage.value = 1 })
 watch([productSearch, productCategoryFilter, productStatusFilter], () => { productPage.value = 1 })
-watch([orderSearch, orderStatusFilter, paymentStatusFilter, orderFlagFilter, orderSort], () => { orderPage.value = 1 })
+watch([orderSearch, orderStatusFilter, paymentStatusFilter, orderFlagFilter, orderSort], async () => {
+  orderPage.value = 1
+  // Switching between browsed and searched modes changes which set the API
+  // returns, so the list has to be re-fetched rather than re-sliced in memory.
+  if (orderSearchActive() || orderServerPage.value !== 1) {
+    orderServerPage.value = 1
+    await refreshOrders()
+  }
+})
 watch(blogSearch, () => { blogPage.value = 1 })
 watch([filteredUsers, userPageCount], () => { userPage.value = clampPage(userPage.value, userPageCount.value) })
 watch([filteredProducts, productPageCount], () => { productPage.value = clampPage(productPage.value, productPageCount.value) })
@@ -4085,7 +4150,15 @@ watch([filteredBlogs, blogPageCount], () => { blogPage.value = clampPage(blogPag
           </tr>
         </tbody>
       </table>
-      <div v-if="filteredOrders.length > pageSize" class="pager">
+      <!-- Without a search the list is a server-side window over all orders, so
+           the pager moves that window. With a search active the full set is in
+           memory and the in-memory pager is the correct one to show. -->
+      <div v-if="!orderSearchActive() && orderTotalPages > 1" class="pager">
+        <button class="button ghost" :disabled="ordersLoading || orderServerPage <= 1" @click="goToOrderPage(orderServerPage - 1)">{{ t('common.prev') }}</button>
+        <span>{{ orderServerPage }} / {{ orderTotalPages }} &middot; {{ orderTotal }}</span>
+        <button class="button ghost" :disabled="ordersLoading || orderServerPage >= orderTotalPages" @click="goToOrderPage(orderServerPage + 1)">{{ t('common.next') }}</button>
+      </div>
+      <div v-else-if="filteredOrders.length > pageSize" class="pager">
         <button class="button ghost" :disabled="orderPage <= 1" @click="prevPage('orders')">{{ t('common.prev') }}</button>
         <span>{{ orderPage }} / {{ orderPageCount }}</span>
         <button class="button ghost" :disabled="orderPage >= orderPageCount" @click="nextPage('orders')">{{ t('common.next') }}</button>
