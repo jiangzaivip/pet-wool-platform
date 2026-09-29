@@ -3848,8 +3848,15 @@ function assertProductionRuntime(store = {}) {
   // Demo login accepts any posted email and mints that customer's session, so a
   // forgotten GOOGLE_DEMO_LOGIN is an account-takeover switch, not a dev aid.
   if (googleDemoLoginEnabled) throw new Error('GOOGLE_DEMO_LOGIN must be false in production')
-  if (isDemoGoogleClientId(String((store.site || {}).google || {}).client_id || process.env.GOOGLE_CLIENT_ID || '')) {
-    throw new Error('a placeholder Google client ID cannot be used in production')
+  // Google sign-in must be backed by at least one real OAuth client ID. The
+  // authoritative source is GOOGLE_CLIENT_IDS (comma-separated, may hold several
+  // clients); site.google.client_id is only an admin-console display value and is
+  // frequently left as the demo placeholder even on a live site, so requiring it
+  // to be non-demo would refuse to start a correctly configured server.
+  // configuredGoogleClientIds is already trimmed and split into a list.
+  const realGoogleClientIds = configuredGoogleClientIds.filter((item) => !isDemoGoogleClientId(item))
+  if (!realGoogleClientIds.length) {
+    throw new Error('at least one real Google client ID must be set in GOOGLE_CLIENT_IDS for production')
   }
   // The default admin password is published in the repo docs; refusing to start
   // is the only reliable way to stop it reaching production.
