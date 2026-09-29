@@ -598,6 +598,35 @@ function fullBodyOptions() {
   ]
 }
 
+// Review photos were 9.5MB of 1200x1600 phone JPEGs. scripts/optimize-review-images.py
+// writes a WebP next to each original (about a third of the size, EXIF stripped),
+// and this swaps the URL over when the variant is actually present. The original
+// stays on disk and is still served, so a missing variant degrades to the JPEG
+// instead of a broken image.
+const webpVariantCache = new Map()
+function preferWebp(url) {
+  if (typeof url !== 'string' || !/\.(jpe?g|png)$/i.test(url) || !url.startsWith('/assets/')) return url
+  if (webpVariantCache.has(url)) return webpVariantCache.get(url)
+  const candidate = url.replace(/\.(jpe?g|png)$/i, '.webp')
+  let resolved = url
+  try {
+    if (existsSync(path.join(frontendDistDir, candidate.replace(/^\//, '')))) resolved = candidate
+  } catch {
+    resolved = url
+  }
+  webpVariantCache.set(url, resolved)
+  return resolved
+}
+
+function reviewWithPreferredImages(review) {
+  if (!review || typeof review !== 'object') return review
+  return {
+    ...review,
+    images: Array.isArray(review.images) ? review.images.map(preferWebp) : review.images,
+    avatar_url: preferWebp(review.avatar_url),
+  }
+}
+
 const reviewSeedMedia = {
   1: {
     images: ['/assets/reviews/1/1.JPG', '/assets/reviews/1/1.1.JPG', '/assets/reviews/1/1.2.JPG'],
@@ -1351,13 +1380,15 @@ function migrateStore(store) {
     theme: normalizeThemeConfig(store.site?.theme || seeded.site.theme),
     policies: { ...content.policies, ...(store.site?.policies || {}) },
     faq: store.site?.faq?.length ? store.site.faq : content.faq,
+    // Prefer the generated WebP for every review photo. Applied on the way out
+    // only, so the stored URLs (and the admin editor) keep pointing at the
+    // originals.
     reviews: (() => {
       const existingReviews = store.site?.reviews
-      if (shouldReplaceLegacyReviewSeed(existingReviews)) {
-        changed = true
-        return content.reviews
-      }
-      return existingReviews?.length ? existingReviews : content.reviews
+      const source = shouldReplaceLegacyReviewSeed(existingReviews)
+        ? (changed = true, content.reviews)
+        : (existingReviews?.length ? existingReviews : content.reviews)
+      return Array.isArray(source) ? source.map(reviewWithPreferredImages) : source
     })(),
     socials: { ...content.socials, ...(store.site?.socials || {}) },
     taxonomies: {
