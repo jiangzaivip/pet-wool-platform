@@ -15,6 +15,7 @@ Pet wool-felt customization e-commerce site (宠物羊毛毡定制平台). Monor
 - Checkout display check: `node --experimental-strip-types scripts/verify-checkout-display.mjs` (not wired into any npm script; also imports `frontend/src/currency.ts`, so it needs the same flag)
 - Full E2E: `npm run test:e2e` (`node test-results/e2e-check.mjs`, Playwright)
 - Pre-deploy checks: `npm run production:check` and `npm run production:paypal-check`
+- Production-start gate: `npm run test:prod-start` (proves `scripts/verify-production-start.mjs` really refuses a bad config; deploy.sh runs the checker itself before touching the live service)
 - Release archive: `npm run release:package` (`scripts/package-release.sh` → `releases/pet-wool-platform-release-<stamp>.tar.gz` + `.sha256`; needs a built `frontend/dist/`)
 
 ## Running services (this host is the deploy box)
@@ -59,3 +60,7 @@ Pet wool-felt customization e-commerce site (宠物羊毛毡定制平台). Monor
 - Guest checkout has no user token: the buyer's proof of ownership is `x-payment-secret` (from `/paypal/create-order`) or, for the first payment, `x-order-secret` (the order's `client_request_id`). These proofs are OR-ed — combining them with `||` or `find(Boolean)` short-circuits on the first rejection string and wrongly denies callers holding the other valid proof.
 - `api-node/backups/` holds customer PII and the PayPal Secret; files are chmod 0600 and the directory 0700. A daily `pet-wool-backup.timer` writes them. Its unit must not set `ProtectHome=true` (the project lives under `/root`, and the service dies with 200/CHDIR).
 - Systemd drop-in dirs under `/etc/systemd/system/<unit>.service.d/` are ignored on this host; edit the unit file itself.
+- `deploy.sh` rolls back via `trap rollback EXIT`, not `ERR`: the health check ends in `exit 1`, which never fires an ERR trap. Do not "simplify" it back.
+- `assertProductionRuntime` only runs under `NODE_ENV=production`, so no local gate exercises it. Run `scripts/verify-production-start.mjs` on the deploy host; it is wired into deploy.sh for exactly this reason.
+- The release file list in `deploy.sh` is explicit — a new script is not deployed until it is added to `RELEASE_FILES`.
+- `.env` values already present in the process environment win over the file. Anything testing `.env` precedence must clear inherited vars first (`VERIFY_START_CLEAN_ENV=1`).
