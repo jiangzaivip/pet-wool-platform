@@ -621,7 +621,13 @@ async function submit() {
     // payment for this order, rendering starts from it instead of guessing.
     await renderOrderPaypalButtons()
     if (seq !== submitSeq) return
-    showOrderMessage(t('order.created', { orderNo: result.order_no }), 'success')
+    // When PayPal is disabled the customer cannot continue to PayPal; point
+    // them to the pay-later path instead of asking them to keep paying.
+    if (site.value.paypal?.enabled === false) {
+      showOrderMessage(t('order.createdPayLater', { orderNo: result.order_no }), 'error')
+    } else {
+      showOrderMessage(t('order.created', { orderNo: result.order_no }), 'success')
+    }
   } catch (e: any) {
     if (seq !== submitSeq) return
     showOrderMessage(submitErrorMessage(e))

@@ -512,7 +512,7 @@ watch(
       <button v-if="site.bot?.enabled" class="bot-toggle" :aria-label="t('bot.launcher')" :title="t('bot.launcher')" @click="botOpen = !botOpen"><MessageCircle :size="22" /><span>{{ t('bot.launcher') }}</span></button>
       <a v-if="showKakaoLink" :href="kakaoUrl" target="_blank" rel="noopener noreferrer" class="kakao">{{ site.contact.kakao_label || 'KakaoTalk' }}</a>
       <a v-if="showWhatsappLink" :href="whatsappUrl" target="_blank" rel="noopener noreferrer" class="whatsapp">{{ site.contact.whatsapp_label || 'WhatsApp' }}</a>
-      <a v-if="showEmailLink" :href="floatingEmailHref" class="email" :aria-label="t('support.emailLabel')" :title="t('support.emailLabel')"><Mail :size="21" /></a>
+      <a v-if="showEmailLink" :href="floatingEmailHref" class="email" :aria-label="t('support.floatingEmailLabel')" :title="t('support.floatingEmailLabel')"><Mail :size="21" /></a>
     </div>
     <section v-if="botOpen && !isAdminRoute" class="bot-panel">
       <header>

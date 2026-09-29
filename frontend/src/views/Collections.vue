@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { api, primarySupportContact, type Category, type Product, type SiteSettings } from '../api'
@@ -21,6 +21,14 @@ const loadError = ref('')
 const productLoadError = ref('')
 const productCache = new Map<string, Product[]>()
 let productRequestId = 0
+
+async function focusProductsOnMobile() {
+  if (typeof window === 'undefined' || !window.matchMedia('(max-width: 640px)').matches) return
+  await nextTick()
+  requestAnimationFrame(() => {
+    document.getElementById('collection-products')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
+}
 
 // Category changes can trigger overlapping requests. The request id and cache
 // below prevent a slower previous response from replacing the current filter.
@@ -108,6 +116,7 @@ async function load() {
     const ready = syncFiltersFromRoute()
     if (!ready) return
     await loadProducts()
+    if (route.params.category) await focusProductsOnMobile()
   } catch {
     loadError.value = t('common.loadFailed')
     products.value = []
@@ -168,6 +177,7 @@ watch(() => [route.params.category, route.query.category, route.query.occasion],
   const ready = syncFiltersFromRoute()
   if (!ready) return
   await loadProducts()
+  if (route.params.category) await focusProductsOnMobile()
 })
 watch(locale, load)
 </script>
@@ -232,7 +242,7 @@ watch(locale, load)
         </div>
       </aside>
 
-      <section>
+      <section id="collection-products">
         <div class="collection-guide">
           <h3>{{ t('collections.chooseGuideTitle') }}</h3>
           <p v-for="item in tm('collections.chooseGuideItems')" :key="String(item)">{{ item }}</p>

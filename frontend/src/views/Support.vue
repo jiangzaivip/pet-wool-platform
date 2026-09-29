@@ -19,6 +19,17 @@ const reviewTouchStartX = ref(0)
 let reviewTimer = 0
 
 const contactLinks = computed(() => supportContacts(site.value, t('support.emailLabel')))
+const primaryContactEmail = computed(() => {
+  const email = String(site.value.brand?.email || '').trim().replace(/\s/g, '')
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : ''
+})
+// Show the brand email alongside the social media links so customers can
+// reach support without leaving the site's usual contact channels.
+const socialLinksWithEmail = computed(() => {
+  const email = primaryContactEmail.value
+  const emailEntry = email ? [{ key: 'email' as const, label: t('support.businessEmail'), handle: email, url: `mailto:${email}` }] : []
+  return [...socialLinks, ...emailEntry]
+})
 const activeReview = computed(() => site.value.reviews?.[reviewIndex.value] || null)
 const supportContext = computed(() => {
   const orderNo = String(route.query.order || '').trim().slice(0, 80)
@@ -183,12 +194,13 @@ watch(locale, loadSupport)
             <span><Headphones :size="15" /><a :href="'https://wa.me/8613583155893'" target="_blank" rel="noopener noreferrer">{{ t('support.whatsappConsult') }}: {{ t('support.brandName') }}</a></span>
             <span><Clock :size="15" />{{ t('support.businessHours') }}</span>
             <span><Clock :size="15" />{{ t('support.replyTime') }}</span>
-            <span v-if="site.brand?.email"><Mail :size="15" />{{ t('support.businessEmail') }}: {{ site.brand.email }}</span>
+            <span v-if="primaryContactEmail"><Mail :size="15" /><a :href="supportContactUrl({ url: `mailto:${primaryContactEmail}` })">{{ t('support.businessEmail') }}: {{ primaryContactEmail }}</a></span>
           </div>
           <div class="sns-links">
-            <a v-for="sns in socialLinks" :key="sns.key" :href="sns.url" target="_blank" rel="noopener noreferrer">
+            <a v-for="sns in socialLinksWithEmail" :key="sns.key" :href="sns.url" target="_blank" rel="noopener noreferrer">
               <Camera v-if="sns.key === 'instagram'" :size="15" />
               <Music2 v-else-if="sns.key === 'tiktok'" :size="15" />
+              <Mail v-else-if="sns.key === 'email'" :size="15" />
               <CirclePlay v-else :size="15" />
               <span>{{ sns.label }}<em>{{ sns.handle }}</em></span>
             </a>

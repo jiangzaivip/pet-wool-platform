@@ -47,6 +47,14 @@ let paypalRenderSeq = 0
 const supportContact = computed(() => {
   return primarySupportContact(site.value, t('support.emailLabel'))
 })
+// The payment recovery panel should route customers through email when it is
+// configured; otherwise fall back to the internal support page, which carries
+// the order context. Hardcoded Kakao/WhatsApp entries are intentionally
+// excluded here so the fallback stays in-app.
+const emailSupportContact = computed(() => {
+  const email = String(site.value.brand?.email || '').trim().replace(/\s/g, '')
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? { label: t('support.emailLabel'), url: `mailto:${email}`, external: false } : null
+})
 const payRecoveryOrder = computed(() => {
   return orders.value.find((order) => order.id === payRecoveryOrderId.value)
 })
@@ -1144,11 +1152,9 @@ watch(() => t('account.title'), setAccountHead)
       <span>{{ t('account.payRecoveryDesc') }}</span>
       <div class="empty-actions">
         <a
-          v-if="supportContact"
+          v-if="emailSupportContact"
           class="button primary"
-          :href="payRecoveryOrder ? supportUrlForOrder(payRecoveryOrder) : supportContact.url"
-          :target="supportContact.external ? '_blank' : undefined"
-          :rel="supportContact.external ? 'noopener noreferrer' : undefined"
+          :href="payRecoveryOrder ? supportUrlForOrder(payRecoveryOrder) : emailSupportContact.url"
         >{{ t('account.contactSupport') }}</a>
         <RouterLink v-else class="button primary" :to="supportRouteForOrder(payRecoveryOrder)">{{ t('account.contactSupport') }}</RouterLink>
         <button class="button ghost" type="button" :disabled="ordersLoading" @click="loadOrders">

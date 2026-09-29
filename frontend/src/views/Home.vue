@@ -29,6 +29,7 @@ const categoryImages = [
   productMemorialImage,
 ]
 const afterImage = '/assets/home-after.png'
+const afterImageWebp = '/assets/home-after.webp'
 
 function categoryImage(category: Category, index: number) {
   return resolveContentImage(category.image_url) || categoryImages[index % categoryImages.length]
@@ -119,7 +120,10 @@ watch(locale, load)
           <figcaption>Before · Photo</figcaption>
         </figure>
         <figure>
-          <img :src="afterImage" alt="WoolBuddy custom wool felt work after production" decoding="async" @error="useProductImageFallback" />
+          <picture>
+            <source type="image/webp" :srcset="afterImageWebp" />
+            <img :src="afterImage" alt="WoolBuddy custom wool felt work after production" decoding="async" @error="useProductImageFallback" />
+          </picture>
           <figcaption>After · WoolBuddy</figcaption>
         </figure>
       </div>
