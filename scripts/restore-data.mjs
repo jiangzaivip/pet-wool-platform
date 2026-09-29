@@ -1,6 +1,6 @@
 // Validates a backup before replacing live JSON data. Dry-run is the default;
 // --apply is required for the replacement step.
-import { cp, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, cp, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
@@ -224,13 +224,28 @@ if (dryRun) {
   process.exit(0)
 }
 
+// A validated pre-restore backup is the safety net, but it is exactly the step
+// that fails when the live store is already corrupt (missing site block, dangling
+// payment references). Aborting there means the operator can never recover from
+// the one situation they need recovery for. In that case preserve the damaged
+// file verbatim and continue: the incoming backup has already passed validation.
 const backupResult = spawnSync(process.execPath, [path.join(rootDir, 'scripts', 'backup-data.mjs')], {
   cwd: rootDir,
   stdio: 'inherit',
 })
 if (backupResult.status !== 0) {
-  console.error('Pre-restore backup failed; aborting restore.')
-  process.exit(1)
+  const quarantine = `${dataFile}.${Date.now()}.corrupt`
+  try {
+    if (await exists(dataFile)) {
+      await copyFile(dataFile, quarantine)
+      console.error(`Live store failed validation; preserved a copy at ${quarantine} and continuing with the validated backup.`)
+    } else {
+      console.error('Live store is missing and could not be backed up; continuing with the validated backup.')
+    }
+  } catch (error) {
+    console.error(`Could not preserve the live store (${error.message}). Aborting so nothing is overwritten.`)
+    process.exit(1)
+  }
 }
 
 await mkdir(dataDir, { recursive: true })

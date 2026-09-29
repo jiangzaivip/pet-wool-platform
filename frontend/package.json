@@ -11,16 +11,16 @@
   },
   "dependencies": {
     "@lucide/vue": "^1.24.0",
-    "@vitejs/plugin-vue": "latest",
+    "@vitejs/plugin-vue": "^6.0.7",
     "filepond": "^4.32.12",
     "filepond-plugin-file-validate-size": "^2.2.8",
     "filepond-plugin-file-validate-type": "^1.2.9",
-    "pinia": "latest",
-    "vite": "latest",
-    "vue": "latest",
+    "pinia": "^3.0.4",
+    "vite": "^8.1.0",
+    "vue": "^3.5.39",
     "vue-filepond": "^8.0.0",
-    "vue-i18n": "latest",
-    "vue-router": "latest"
+    "vue-i18n": "^11.4.6",
+    "vue-router": "^5.1.0"
   },
   "devDependencies": {
     "typescript": "^6.0.3",

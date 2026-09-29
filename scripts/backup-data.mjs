@@ -1,6 +1,6 @@
 // Creates a validated, timestamped snapshot of the JSON store and uploads.
 // Backups may contain payment credentials and must be handled as secrets.
-import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -193,16 +193,25 @@ async function validateStore(store, uploadsBase = uploadDir) {
   }
 }
 
-await mkdir(backupRoot, { recursive: true })
+await mkdir(backupRoot, { recursive: true, mode: 0o700 })
+// Backups hold customer PII plus the PayPal Secret and Webhook ID. cp() keeps
+// the source file mode, so store.json arrived here as world-readable 0644 and
+// the UMask of whatever launched the timer did not help. Force 0600 explicitly
+// instead of relying on the caller.
+await chmod(backupRoot, 0o700)
 
 const store = JSON.parse(await readFile(dataFile, 'utf8'))
 const counts = await validateStore(store)
 const backupDir = path.join(backupRoot, timestamp())
-await mkdir(backupDir, { recursive: true })
+await mkdir(backupDir, { recursive: true, mode: 0o700 })
 
-await cp(dataFile, path.join(backupDir, 'store.json'))
+const storeBackup = path.join(backupDir, 'store.json')
+await cp(dataFile, storeBackup)
+await chmod(storeBackup, 0o600)
 if (await exists(uploadDir)) {
-  await cp(uploadDir, path.join(backupDir, 'uploads'), { recursive: true })
+  const uploadsBackup = path.join(backupDir, 'uploads')
+  await cp(uploadDir, uploadsBackup, { recursive: true })
+  await chmod(uploadsBackup, 0o700)
 }
 
 await writeFile(path.join(backupDir, 'README.txt'), [

@@ -1,0 +1,14 @@
+[Unit]
+Description=Pet Wool Platform daily data backup
+Documentation=man:systemd.timer(5)
+
+[Timer]
+# 03:17 rather than 03:00 on purpose: several distros schedule their own
+# maintenance jobs on the hour, and a backup racing a rotate or a deploy is a
+# backup you cannot trust.
+OnCalendar=*-*-* 03:17:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target
