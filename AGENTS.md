@@ -5,12 +5,13 @@ Pet wool-felt customization e-commerce site (宠物羊毛毡定制平台). Monor
 ## Commands (verified in root `package.json`)
 
 - Install: `npm install` then `npm --prefix frontend install`
-- Build frontend: `npm run build` (runs `vite build` via `--prefix frontend`; does NOT type-check — vue-tsc is a devDependency but not wired into any script; no linter configured)
+- Build frontend: `npm run build` (runs `vite build` via `--prefix frontend`; does NOT type-check — run `npm --prefix frontend run typecheck` separately; no linter configured)
 - Quick gate (pre-deploy, ~3s): `npm run verify:core` (= `node scripts/verify-core.mjs`) — API contracts + page render smoke, no fragile text assertions, no data writes. Non-zero exit on any failure.
 - Quick gate without browser: `SKIP_BROWSER=1 npm run verify:core`
 - Smoke check: `npm run smoke` (`scripts/smoke-check.sh`; override target with `BASE_URL=`/`API_URL=`/`API_ORIGIN=` env vars — `API_ORIGIN` defaults to `API_URL`, set it to `http://127.0.0.1:8082` when the site is served on a different origin)
 - Currency/payment invariants: `npm run test:currency` (three verify scripts; needs `node --experimental-strip-types` because they import `frontend/src/currency.ts` directly)
 - Admin console verify: `npm run test:admin`
+- Translation key parity: `npm run test:i18n` (needs `node --experimental-strip-types`; fails if en/ko miss a customer-facing zh key)
 - Checkout display check: `node --experimental-strip-types scripts/verify-checkout-display.mjs` (not wired into any npm script; also imports `frontend/src/currency.ts`, so it needs the same flag)
 - Full E2E: `npm run test:e2e` (`node test-results/e2e-check.mjs`, Playwright)
 - Pre-deploy checks: `npm run production:check` and `npm run production:paypal-check`
@@ -26,7 +27,7 @@ Pet wool-felt customization e-commerce site (宠物羊毛毡定制平台). Monor
 ## Data — treat as production
 
 - The live database is `api-node/data/store.json` (gitignored). Never hand-edit it while `pet-wool-api` is running; change data via the admin console or scripts.
-- Back up before bulk changes or release: `node scripts/backup-data.mjs` → `api-node/backups/<timestamp>/` (store.json + uploads; keep last 10). Restore: `node scripts/restore-data.mjs --dry-run <dir>` then `--apply <dir>` (auto-creates a pre-restore backup).
+- Back up before bulk changes or release: `node scripts/backup-data.mjs` → `api-node/backups/<timestamp>/` (store.json + uploads; keep last 10, `BACKUP_KEEP` to change). A daily `pet-wool-backup.timer` does this automatically. Restore: `node scripts/restore-data.mjs --dry-run <dir>` then `--apply <dir>` — if the live store is already corrupt the pre-restore backup fails, and the damaged file is kept as `store.json.<ts>.corrupt` instead of aborting.
 - E2E and cleanup scripts auto-clean test data with prefixes `commercial-`, `unpaid-`, `blocked-`, `hidden-`, `commercial-check-*`; manual cleanup: `node scripts/cleanup-e2e-data.mjs --apply --confirm-e2e-cleanup` (preview without flags).
 - Postgres is optional (`STORE_BACKEND=postgres` + `DATABASE_URL` in `.env`); default is JSON. Migration export: `npm run export:postgres`.
 
@@ -36,6 +37,9 @@ Pet wool-felt customization e-commerce site (宠物羊毛毡定制平台). Monor
 - The currency table is deliberately duplicated: `frontend/src/currency.ts` and `api-node/currency.mjs` must export identical `CURRENCY_RATE_VERSION`, `CURRENCY_BASE`, `CURRENCY_RATES`, `CURRENCY_DECIMALS`, `LANG_CURRENCY` — `npm run test:currency` fails on drift. Server payment snapshots are authoritative; client display conversion is an estimate.
 - All browser-side API calls, token handling, and error normalization go through `frontend/src/api.ts` — views must not bypass it.
 - In `api-node/server.mjs`, keep env/filesystem path derivation in the config block at the top; the server auto-loads `.env` from the project root.
+- `store.json` is a process-wide singleton cached in memory; read-modify-write goes through `saveStore`/`withStore` and must not be reordered. Loading the file per request silently lost concurrent orders.
+- `X-Forwarded-For` is trusted only when `TRUST_PROXY_ADDRESSES` lists the proxy address (empty by default) — otherwise anyone can mint a fresh rate-limit bucket per request.
+- i18n keys: `npm run test:i18n` enforces that en/ko cover every customer-facing zh key; `admin.*` is intentionally Chinese-only.
 - PayPal credentials (Client ID/Secret/Webhook ID, mode, currency) are configured in the admin dashboard site config, never in `.env` — only technical switches like `PAYPAL_MOCK`, `PAYPAL_TIMEOUT_MS` live there.
 - Commit messages: short one-line summaries, typically Chinese.
 
@@ -51,3 +55,7 @@ Pet wool-felt customization e-commerce site (宠物羊毛毡定制平台). Monor
 - `api-node/backups/` may contain PayPal Secret/Webhook ID — treat as sensitive; never commit (already gitignored) and use the admin "脱敏备份" export for third parties.
 - `npm run smoke` now hard-requires `frontend/public/robots.txt` (must contain a `Sitemap: ` line), `frontend/public/sitemap.xml`, and nginx's `/doc/` (served from `site-doc/`) — a missing file there fails the smoke check, not the build.
 - `.env` files are gitignored except `*.example` templates; admin default login in dev is `admin@example.com` / `admin123456` and must be replaced before production.
+- With `NODE_ENV=production` the API refuses to start unless PayPal is live with a webhook ID, `PUBLIC_BASE_URL` is HTTPS, `GOOGLE_DEMO_LOGIN` is off, the admin password is not the published default, and `USER_TOKEN_SECRET` is set. PayPal is currently sandbox, so a production start fails by design.
+- Guest checkout has no user token: the buyer's proof of ownership is `x-payment-secret` (from `/paypal/create-order`) or, for the first payment, `x-order-secret` (the order's `client_request_id`). These proofs are OR-ed — combining them with `||` or `find(Boolean)` short-circuits on the first rejection string and wrongly denies callers holding the other valid proof.
+- `api-node/backups/` holds customer PII and the PayPal Secret; files are chmod 0600 and the directory 0700. A daily `pet-wool-backup.timer` writes them. Its unit must not set `ProtectHome=true` (the project lives under `/root`, and the service dies with 200/CHDIR).
+- Systemd drop-in dirs under `/etc/systemd/system/<unit>.service.d/` are ignored on this host; edit the unit file itself.
