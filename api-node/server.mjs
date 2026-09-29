@@ -1649,11 +1649,37 @@ function acceptsGzip(req) {
   return String(req.headers['accept-encoding'] || '').toLowerCase().includes('gzip')
 }
 
+// Shared tail of the static responder so an on-the-fly transformed body (the SEO
+// shell) gets exactly the same security headers and gzip treatment as a file on
+// disk. Going through send() instead would JSON-encode the HTML and ship
+// escaped \n and \" straight into the browser.
+function sendStaticPayload(req, res, body, { ext, cacheControl, status = 200, vary = '' }) {
+  let payload = body
+  const headers = {
+    ...frontendSecurityHeaders,
+    'content-type': staticMimeTypes[ext] || 'application/octet-stream',
+    'cache-control': cacheControl,
+    ...(status === 404 ? { 'x-robots-tag': 'noindex' } : {}),
+    ...(vary ? { vary } : {}),
+  }
+  if (req.method !== 'HEAD' && status === 200 && staticGzipTypes.has(ext) && acceptsGzip(req) && body.length > 1024) {
+    try {
+      const gzipped = gzipSync(body)
+      payload = gzipped
+      headers['content-encoding'] = 'gzip'
+      const varyValue = [vary, 'Accept-Encoding'].filter(Boolean).join(', ')
+      headers.vary = varyValue
+    } catch { /* gzip 失败则按未压缩返回 */ }
+  }
+  res.writeHead(status, headers)
+  if (req.method === 'HEAD') return res.end()
+  return res.end(payload)
+}
+
 async function sendStaticFile(req, res, filePath, cacheControl, status = 200) {
   try {
     const body = await readFile(filePath)
     const ext = path.extname(filePath).toLowerCase()
-    const contentType = staticMimeTypes[ext] || 'application/octet-stream'
     let payload = body
     const headers = {
       ...frontendSecurityHeaders,
@@ -1733,6 +1759,182 @@ function isKnownFrontendRoute(pathname, store) {
   return normalized.startsWith('/doc/')
 }
 
+// Every URL used to be served the same 487-byte shell: one <title>WoolBuddy</title>
+// and an empty #app. Crawlers that do not run JavaScript (WeChat, Xiaohongshu,
+// Slack, most link unfurlers) therefore saw identical, contentless HTML for the
+// homepage, every product and every article. The SPA still sets these tags at
+// runtime, so this only adds what a crawler would otherwise miss.
+const SEO_POLICY_LABELS = {
+  privacy: '隐私政策',
+  terms: '服务条款',
+  refund: '退款政策',
+  shipping: '配送政策',
+  care: '作品护理说明',
+  cookies: 'Cookie 说明',
+}
+
+const SEO_FALLBACK = {
+  home: {
+    title: 'WoolBuddy 手作羊毛毡宠物定制 | 宠物肖像与纪念礼物',
+    description: '用一张照片定制手工羊毛毡宠物肖像与纪念礼物，匠人手工制作，支持国际配送。',
+  },
+  collections: {
+    title: '全部定制分类 | WoolBuddy 手作羊毛毡',
+    description: '浏览 WoolBuddy 全部羊毛毡定制分类：宠物肖像、相框摆件、纪念礼物与护理指南。',
+  },
+  product: {
+    title: '定制详情 | WoolBuddy 手作羊毛毡',
+    description: '查看这款手工羊毛毡作品的材质、尺寸、价格与制作周期，下单后由匠人手工制作。',
+  },
+  blog: {
+    title: '定制指南与纪念礼物灵感 | WoolBuddy',
+    description: '羊毛毡定制指南、照片准备建议与宠物纪念礼物灵感。',
+  },
+  blogPost: {
+    title: '定制指南 | WoolBuddy',
+    description: '羊毛毡定制与宠物纪念礼物的实操指南。',
+  },
+  support: {
+    title: '服务与政策 | WoolBuddy',
+    description: 'WoolBuddy 的制作周期、配送、护理、退款与隐私政策说明。',
+  },
+  policy: {
+    title: '政策说明 | WoolBuddy',
+    description: 'WoolBuddy 隐私政策、服务条款与退款说明。',
+  },
+}
+
+function publicSiteOrigin() {
+  const configured = String(process.env.PUBLIC_BASE_URL || '').trim()
+  if (configured) return configured.replace(/\/+$/, '')
+  return 'https://woolbuddy.shop'
+}
+
+function seoText(value, limit) {
+  const text = String(value || '').replace(/[\s\u0000-\u001f\u007f]+/g, ' ').trim()
+  if (!text) return ''
+  const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  return escaped.length > limit ? `${escaped.slice(0, limit).trim()}...` : escaped
+}
+
+function seoMetaFor(pathname, store, origin) {
+  let decoded = pathname
+  try {
+    decoded = decodeURIComponent(pathname)
+  } catch {
+    return null
+  }
+  const normalized = decoded.length > 1 ? decoded.replace(/\/+$/, '') : decoded
+  let entry = SEO_FALLBACK.home
+  let image = ''
+
+  const productMatch = normalized.match(/^\/products\/([^/]+)$/)
+  const policyMatch = normalized.match(/^\/policies\/([^/]+)$/)
+  const postMatch = normalized.match(/^\/blog\/([^/]+)$/)
+  const categoryMatch = normalized.match(/^\/collections\/([^/]+)(?:\/([^/]+))?$/)
+
+  if (productMatch) {
+    const slug = productMatch[1]
+    const products = store?.products || []
+    const product = products.find((item) => item.slug === slug && item.status !== 'hidden')
+    if (product) {
+      const localized = product.i18n?.zh || product.translations?.zh || {}
+      entry = {
+        title: seoText(localized.title || product.title, 90) + ' | WoolBuddy',
+        description: seoText(localized.seo_description || localized.description || product.description, 260),
+      }
+      image = product.image_url || ''
+    } else {
+      entry = SEO_FALLBACK.product
+    }
+  } else if (policyMatch) {
+    // site.policies is a plain key -> markdown map (care, shipping, refund,
+    // privacy, terms), so there is no stored title to read. Derive one from the
+    // key and lead the description with the first real sentence of the body.
+    const key = policyMatch[1]
+    const label = SEO_POLICY_LABELS[key] || key
+    const body = (store?.site?.policies || {})[key]
+    const firstSentence = seoText(body, 200).split(/(?<=[。.!?.])\s/)[0] || ''
+    entry = {
+      title: `${label} | WoolBuddy`,
+      description: firstSentence
+        ? `${label}：${firstSentence}`
+        : `${label}说明：WoolBuddy 手工羊毛毡定制的${label}。`,
+    }
+  } else if (postMatch) {
+    const slug = postMatch[1]
+    const posts = store?.site?.blog || store?.blog || []
+    const post = (Array.isArray(posts) ? posts : []).find((item) => item && item.slug === slug)
+    entry = {
+      title: seoText(post?.title?.zh || post?.title, 90) + ' | WoolBuddy',
+      description: seoText(post?.excerpt?.zh || post?.excerpt || post?.summary?.zh, 260),
+    }
+    if (!post?.title?.zh && !post?.title) entry = SEO_FALLBACK.blogPost
+    image = post?.cover_url || post?.cover || ''
+  } else if (categoryMatch) {
+    // Collections nest one level: /collections/<category> and
+    // /collections/<category>/<child> both exist, and seo_title lives on the
+    // parent while the child carries the product list.
+    const [, parentSlug, childSlug] = categoryMatch
+    const categories = store?.categories || []
+    const parent = categories.find((item) => item.slug === parentSlug && item.status !== 'hidden')
+    const child = parent?.children?.find((item) => item.slug === childSlug)
+    const source = child || parent
+    const parentTitle = seoText(parent?.seo_title || parent?.title, 90)
+    const childTitle = seoText(child?.title, 60)
+    entry = {
+      title: childTitle && parentTitle
+        ? `${childTitle} - ${parentTitle} | WoolBuddy`
+        : `${parentTitle || '分类'} | WoolBuddy`,
+      description: seoText(
+        child?.seo_description || child?.description || parent?.seo_description || parent?.description,
+        260,
+      ),
+    }
+    image = child?.image_url || parent?.image_url || ''
+  } else if (normalized === '/collections') {
+    entry = SEO_FALLBACK.collections
+  } else if (normalized === '/blog') {
+    entry = SEO_FALLBACK.blog
+  } else if (normalized === '/support' || normalized === '/doc') {
+    entry = SEO_FALLBACK.support
+  } else if (policyMatch) {
+    entry = SEO_FALLBACK.policy
+  } else if (normalized !== '/') {
+    entry = SEO_FALLBACK.home
+  }
+
+  if (!entry.title) entry = SEO_FALLBACK.home
+  if (!entry.description) entry = { ...entry, description: SEO_FALLBACK.home.description }
+  const canonical = `${origin}${normalized === '/' ? '/' : normalized}`
+  const imageUrl = image ? (image.startsWith('http') ? image : `${origin}${image.startsWith('/') ? '' : '/'}${image}`) : `${origin}/assets/home-after.webp`
+  return { ...entry, canonical, image: imageUrl }
+}
+
+function renderSeoHtml(html, seo) {
+  if (!seo) return html
+  // The <title> is handled by the replacement below; including it here too would
+  // leave the document with two of them.
+  const tags = [
+    `<meta name="description" content="${seo.description}">`,
+    `<meta property="og:type" content="website">`,
+    `<meta property="og:title" content="${seo.title}">`,
+    `<meta property="og:description" content="${seo.description}">`,
+    `<meta property="og:url" content="${seo.canonical}">`,
+    `<meta property="og:image" content="${seo.image}">`,
+    `<meta property="og:site_name" content="WoolBuddy">`,
+    `<meta name="twitter:card" content="summary_large_image">`,
+    `<meta name="twitter:title" content="${seo.title}">`,
+    `<meta name="twitter:description" content="${seo.description}">`,
+    `<meta name="twitter:image" content="${seo.image}">`,
+    `<link rel="canonical" href="${seo.canonical}">`,
+  ].join('\n    ')
+  // Replace the placeholder title rather than appending, so the document has
+  // exactly one <title>.
+  const withTitle = html.replace(/<title>[\s\S]*?<\/title>/, `<title>${seo.title}</title>`)
+  return withTitle.includes('</head>') ? withTitle.replace('</head>', `  ${tags}\n  </head>`) : withTitle
+}
+
 async function sendFrontendFile(req, res, pathname = '/', status = 200) {
   if (!serveFrontend) return send(res, 404, { message: 'not found' })
   if (!['GET', 'HEAD'].includes(req.method || 'GET')) return send(res, 404, { message: 'not found' })
@@ -1771,6 +1973,24 @@ async function sendFrontendFile(req, res, pathname = '/', status = 200) {
     : decoded.startsWith('/assets/')
       ? 'public, max-age=31536000, immutable'
       : 'public, max-age=3600'
+
+  // index.html is the SPA shell, so it gets per-route meta injected on the way
+  // out. The file on disk is untouched and the response stays no-cache, which
+  // keeps the shell fresh while every URL still serves distinct metadata.
+  if (path.basename(filePath) === 'index.html') {
+    const origin = publicSiteOrigin()
+    const seo = seoMetaFor(decoded, await loadStore(), origin)
+    if (seo) {
+      try {
+        const html = renderSeoHtml(await readFile(filePath, 'utf8'), seo)
+        return sendStaticPayload(req, res, Buffer.from(html, 'utf8'), {
+          ext: '.html', cacheControl, status: responseStatus, vary: 'Accept-Language',
+        })
+      } catch {
+        // Fall through to the static file if the shell cannot be read.
+      }
+    }
+  }
   return sendStaticFile(req, res, filePath, cacheControl, responseStatus)
 }
 
