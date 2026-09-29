@@ -81,8 +81,17 @@ RELEASE_FILES=(
   scripts/production-check.mjs
   scripts/restore-data.mjs
   scripts/smoke-check.sh
+  scripts/verify-core.mjs
+  scripts/verify-i18n.mjs
+  scripts/verify-admin-console.mjs
+  # verify-production-start-check.mjs is intentionally NOT published: it rewrites
+  # the project .env while probing refusal cases, which has no place on a host
+  # that holds live credentials. It runs from the development machine instead.
+  scripts/verify-production-start.mjs
+  scripts/cleanup-production-test-data.mjs
   start.sh stop.sh restart.sh install-systemd.sh
   deploy
+  deploy.sh
   .env.deploy.example
 )
 if [ "${BOOTSTRAP_DATA}" = "true" ]; then
