@@ -27,6 +27,19 @@ import {
   validatePaypalCaptureAmount,
 } from './payment-amounts.mjs'
 import { quoteShippingCents, shippingConfig } from './shipping.mjs'
+import { allowReport, normalizeClientReport, recentClientReports, MAX_REPORTS } from './client-reports.mjs'
+
+// The reporting helpers take their dependencies explicitly so they stay testable
+// outside this file. Built on first use rather than at module load: id(), now()
+// and trustedProxyAddresses are declared further down, and touching them here
+// would hit the temporal dead zone and crash the process on start.
+let reportDepsCache = null
+function reportDeps() {
+  if (!reportDepsCache) {
+    reportDepsCache = { makeId: id, timestamp: now, normalizeIp, trustedProxyAddresses }
+  }
+  return reportDepsCache
+}
 
 const { Pool } = pg
 
@@ -5004,6 +5017,25 @@ async function handle(req, res) {
     return send(res, 200, publicProductView(localizeProduct(product, store.categories, lang)), privateNoStoreHeaders)
   }
 
+  if (req.method === 'POST' && route === '/client-reports') {
+    if (!allowReport(req, reportDeps())) return send(res, 429, { message: 'too many reports' }, privateNoStoreHeaders)
+    const report = normalizeClientReport(await readJson(req), reportDeps())
+    if (!report) return send(res, 400, { message: 'invalid report' }, privateNoStoreHeaders)
+    if (!Array.isArray(store.client_reports)) store.client_reports = []
+    store.client_reports.push(report)
+    if (store.client_reports.length > MAX_REPORTS) {
+      store.client_reports = store.client_reports.slice(-MAX_REPORTS)
+    }
+    await saveStore(store)
+    log('warn', 'client.error_reported', {
+      request_id: req.request_id,
+      level: report.level,
+      route: report.route,
+      message: report.message,
+    })
+    return send(res, 202, { accepted: true }, privateNoStoreHeaders)
+  }
+
   if (req.method === 'POST' && route === '/shipping-quote') {
     const input = await readJson(req)
     const quote = quoteShippingCents(store.site, {
@@ -5604,6 +5636,21 @@ async function handle(req, res) {
         ...paypalErrorLog(error),
       }, privateNoStoreHeaders)
     }
+  }
+
+  if (req.method === 'GET' && route === '/admin/client-reports') {
+    return send(res, 200, {
+      items: recentClientReports(store, Math.min(Number(url.searchParams.get('limit')) || 50, MAX_REPORTS)),
+      total: Array.isArray(store.client_reports) ? store.client_reports.length : 0,
+      capacity: MAX_REPORTS,
+    })
+  }
+
+  if (req.method === 'DELETE' && route === '/admin/client-reports') {
+    const removed = Array.isArray(store.client_reports) ? store.client_reports.length : 0
+    store.client_reports = []
+    await saveStore(store)
+    return send(res, 200, { cleared: removed })
   }
 
   if (req.method === 'GET' && route === '/admin/overview') {

@@ -10,6 +10,7 @@ import Collections from './views/Collections.vue'
 import ProductDetail from './views/ProductDetail.vue'
 import { i18n } from './i18n'
 import { safeGetLocalStorage } from './api'
+import { installErrorReporting } from './error-reporting'
 import './style.css'
 
 // Keep route declarations in one place so navigation, SEO updates, and the
@@ -48,5 +49,8 @@ router.beforeEach((to) => {
   }
   return true
 })
+
+// Installed before mount so a failure during the first render is still reported.
+installErrorReporting()
 
 createApp(App).use(createPinia()).use(i18n).use(router).mount('#app')
