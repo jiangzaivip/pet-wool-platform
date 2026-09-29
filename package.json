@@ -11,6 +11,7 @@
     "production:paypal-check": "node scripts/paypal-live-check.mjs",
     "verify:core": "node scripts/verify-core.mjs",
     "test:i18n": "node --experimental-strip-types scripts/verify-i18n.mjs",
+    "test:imports": "node scripts/verify-module-imports.mjs",
     "test:prod-start": "node scripts/verify-production-start-check.mjs"
   },
   "devDependencies": {

@@ -48,8 +48,12 @@ const context = vm.createContext({
       mutateDuringRequest()
       return { id: 'a', internal_note: 'server note', revision: 3, ...pendingMutation, updated_at: 'latest' }
     }
-    assert.ok(path in responses, `Unexpected API call: ${path}`)
-    return structuredClone(responses[path])
+    // Match on the path only. Endpoints that are now paginated or filtered are
+    // called with a query string, and an exact-key lookup would report a valid
+    // request as unexpected.
+    const route = path.split('?')[0]
+    assert.ok(route in responses, `Unexpected API call: ${path}`)
+    return structuredClone(responses[route])
   },
 })
 vm.runInContext(script, context)
@@ -59,7 +63,11 @@ evaluate('showAdminMessage = (message) => testMessages.push(message)')
 context.testMessages = messages
 assert.equal(evaluate('tab.value'), 'orders')
 assert.equal(await evaluate('loadTab()'), true)
-assert.deepEqual(requests, ['/admin/orders'])
+// Orders are now server-paginated, so the request carries page params. The
+// matching matters as much as the path: it is what proves the dashboard is not
+// silently falling back to pulling every order and slicing client-side.
+assert.equal(requests.length, 1)
+assert.match(requests[0], /^\/admin\/orders\?page=\d+&page_size=\d+$/)
 assert.equal(evaluate('initialLoading.value'), false)
 assert.ok(watchers.some(([target]) => target === evaluate('tab')))
 

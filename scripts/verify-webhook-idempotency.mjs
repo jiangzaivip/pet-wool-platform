@@ -46,8 +46,10 @@ try {
     assert.equal(response.status, expected, `${route}: HTTP ${response.status} ${JSON.stringify(data)}\n${output}`)
     return data
   }
-  const order = await request('/orders', { product_id: 'test', option_id: 'size', customer_name: 'Test', email: 'test@example.invalid', phone: '123', country: 'KR', pet_name: 'Test', pet_type: 'cat', photo_urls: ['/uploads/123-abcdef.png'], payment_type: 'full' })
-  const intent = await request('/paypal/create-order', { order_id: order.id })
+  // Guest order: create-order is authorized by the order's own client_request_id.
+  const clientRequestId = 'verify-webhook-idempotency-secret'
+  const order = await request('/orders', { product_id: 'test', option_id: 'size', customer_name: 'Test', email: 'test@example.invalid', phone: '123', country: 'KR', pet_name: 'Test', pet_type: 'cat', photo_urls: ['/uploads/123-abcdef.png'], payment_type: 'full', client_request_id: clientRequestId })
+  const intent = await request('/paypal/create-order', { order_id: order.id }, { 'x-order-secret': clientRequestId })
   assert.equal(intent.payment.amount_cents, 73)
   assert.equal(intent.payment.currency, 'USD')
   const event = { id: 'isolated-event', event_type: 'PAYMENT.CAPTURE.COMPLETED', resource: { id: 'isolated-capture', status: 'COMPLETED', supplementary_data: { related_ids: { order_id: intent.id } }, amount: { value: '0.73', currency_code: 'USD' } } }

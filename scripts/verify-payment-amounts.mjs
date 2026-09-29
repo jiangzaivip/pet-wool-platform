@@ -71,8 +71,12 @@ const child = spawn(process.execPath, [fileURLToPath(new URL('../api-node/server
 let output = ''
 child.stdout.on('data', (data) => { output += data })
 child.stderr.on('data', (data) => { output += data })
-async function request(route, body, method = 'POST', token = '') {
-  const response = await fetch(`http://127.0.0.1:19873/api${route}`, { method, headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) })
+// orderSecret carries x-order-secret. A guest order has no user token, so
+// opening its first payment is authorized by the order's own client_request_id.
+// Without this header every guest PayPal call would be refused, which is exactly
+// what the payment-ownership fix intended.
+async function request(route, body, method = 'POST', token = '', orderSecret = '', paymentSecret = '') {
+  const response = await fetch(`http://127.0.0.1:19873/api${route}`, { method, headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), ...(orderSecret ? { 'x-order-secret': orderSecret } : {}), ...(paymentSecret ? { 'x-payment-secret': paymentSecret } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) })
   const data = await response.json()
   assert.ok(response.ok, `${method} ${route}: HTTP ${response.status} ${JSON.stringify(data)}\n${output}`)
   return data
@@ -86,30 +90,33 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
   assert.ok(ready, `API startup timeout\n${output}`)
-  const order = await request('/orders', { product_id: 'test', option_id: 'test-option', customer_name: 'Test', email: 'test@example.invalid', phone: '123', country: 'KR', pet_name: 'Test', pet_type: 'cat', photo_urls: ['/uploads/123-abcdef.png'], payment_type: 'deposit' })
+  const clientRequestId = 'verify-payment-amounts-fixed-secret'
+  const order = await request('/orders', { product_id: 'test', option_id: 'test-option', customer_name: 'Test', email: 'test@example.invalid', phone: '123', country: 'KR', pet_name: 'Test', pet_type: 'cat', photo_urls: ['/uploads/123-abcdef.png'], payment_type: 'deposit', client_request_id: clientRequestId })
   assert.equal(order.currency, 'KRW')
   assert.equal(order.amount_cents, 1000)
   assert.equal(order.initial_payment_cents, 500)
   console.log('PASS USD 0.73 product -> KRW 1000 order, KRW 500 deposit')
-  const intent = await request('/paypal/create-order', { order_id: order.id })
+  const intent = await request('/paypal/create-order', { order_id: order.id }, 'POST', '', clientRequestId)
   assert.equal(intent.payment.currency, 'USD')
   assert.equal(intent.payment.amount_cents, 36)
   assert.equal(intent.payment.base_amount_cents, 500)
-  const first = await request('/paypal/capture-order', { paypal_order_id: intent.id })
+  const first = await request('/paypal/capture-order', { paypal_order_id: intent.id }, 'POST', '', '', intent.payment.capture_secret)
+  assert.ok(intent.payment.capture_secret, 'create-order must hand back a capture secret')
   assert.equal(first.order.paid_amount_cents, 500)
   assert.equal(first.order.payment_status, 'deposit_paid')
-  const duplicate = await request('/paypal/capture-order', { paypal_order_id: intent.id })
+  console.log('DBG secret len:', String(intent.payment.capture_secret || '').length, '| orderSecret len:', clientRequestId.length)
+  const duplicate = await request('/paypal/capture-order', { paypal_order_id: intent.id }, 'POST', '', clientRequestId, intent.payment.capture_secret)
   assert.equal(duplicate.order.paid_amount_cents, 500)
   console.log('PASS USD 0.36 deposit capture and repeated capture -> KRW 500 paid')
   const login = await request('/admin/login', { email: 'test@example.invalid', password: 'isolated-password' })
   await request(`/admin/orders/${order.id}/status`, { order_status: 'balance_due' }, 'PUT', login.token)
-  const balance = await request('/paypal/create-order', { order_id: order.id })
+  const balance = await request('/paypal/create-order', { order_id: order.id }, 'POST', '', clientRequestId)
   assert.equal(balance.payment.amount_cents, 37)
   assert.equal(balance.payment.base_amount_cents, 500)
-  const final = await request('/paypal/capture-order', { paypal_order_id: balance.id })
+  const final = await request('/paypal/capture-order', { paypal_order_id: balance.id }, 'POST', '', clientRequestId, balance.payment.capture_secret)
   assert.equal(final.order.paid_amount_cents, 1000)
   assert.equal(final.order.payment_status, 'paid')
-  const repeated = await request('/paypal/capture-order', { paypal_order_id: balance.id })
+  const repeated = await request('/paypal/capture-order', { paypal_order_id: balance.id }, 'POST', '', clientRequestId, balance.payment.capture_secret)
   assert.equal(repeated.order.paid_amount_cents, 1000)
   assert.equal(intent.payment.amount_cents + balance.payment.amount_cents, 73)
   console.log('PASS USD 0.37 balance + USD 0.36 deposit = USD 0.73; repeated balance -> KRW 1000 paid')
