@@ -26,6 +26,7 @@ import {
   validatePaymentSettlement,
   validatePaypalCaptureAmount,
 } from './payment-amounts.mjs'
+import { quoteShippingCents, shippingConfig } from './shipping.mjs'
 
 const { Pool } = pg
 
@@ -3364,6 +3365,12 @@ function publicOrder(order = {}) {
     option_name: order.option_name,
     payment_type: order.payment_type,
     amount_cents: order.amount_cents,
+    // Surfaced so the checkout can show a shipping line instead of an unexplained
+    // total. Older orders have no shipping and report zero.
+    product_amount_cents: order.product_amount_cents ?? order.amount_cents,
+    shipping_cents: order.shipping_cents || 0,
+    shipping_label: order.shipping_label || '',
+    shipping_free: Boolean(order.shipping_free),
     initial_payment_cents: order.initial_payment_cents || 0,
     paid_amount_cents: order.paid_amount_cents || 0,
     currency: order.currency,
@@ -3986,8 +3993,14 @@ function orderTotalAmount(product, optionId) {
   return Number(option?.price_cents || product.base_price_cents || 0)
 }
 
-function orderInitialPaymentAmount(product, optionId, paymentType) {
-  const total = orderTotalAmount(product, optionId)
+function orderInitialPaymentAmount(product, optionId, paymentType, totalOverride) {
+  // totalOverride carries product + shipping. Without it the deposit would be a
+  // percentage of the product price only, so a shipping-bearing order would end
+  // up with initial_payment_cents < what orderInitialPayableAmount() derives
+  // from amount_cents, and the two would disagree about what is owed.
+  const total = Number.isSafeInteger(totalOverride) && totalOverride >= 0
+    ? totalOverride
+    : orderTotalAmount(product, optionId)
   if (paymentType === 'full') return total
   return Math.round(total * Number(product.deposit_percent || 0) / 100)
 }
@@ -4991,6 +5004,15 @@ async function handle(req, res) {
     return send(res, 200, publicProductView(localizeProduct(product, store.categories, lang)), privateNoStoreHeaders)
   }
 
+  if (req.method === 'POST' && route === '/shipping-quote') {
+    const input = await readJson(req)
+    const quote = quoteShippingCents(store.site, {
+      country: input.country,
+      subtotalCents: Number(input.subtotal_cents || 0),
+    })
+    return send(res, 200, quote)
+  }
+
   if (req.method === 'POST' && route === '/orders') {
     const input = await readJson(req)
     if (isBlockedEmail(store, input.email)) {
@@ -5031,8 +5053,15 @@ async function handle(req, res) {
     }
     const orderLang = normalizeLang(input.lang || input.locale) || lang
     const localizedProduct = localizeProduct(product, store.categories, orderLang)
-    const amount = orderTotalAmount(product, input.option_id)
-    const initialPaymentAmount = orderInitialPaymentAmount(product, input.option_id, input.payment_type || 'deposit')
+    const productAmount = orderTotalAmount(product, input.option_id)
+    // Shipping is quoted once, here, and folded into amount_cents so the payment
+    // validators keep treating order.amount_cents as the single payable total.
+    const shippingQuote = quoteShippingCents(store.site, {
+      country: input.country,
+      subtotalCents: productAmount,
+    })
+    const amount = productAmount + (shippingQuote.cents || 0)
+    const initialPaymentAmount = orderInitialPaymentAmount(product, input.option_id, input.payment_type || 'deposit', amount)
     const option = product.options?.find((o) => o.id === input.option_id) || product.options?.[0]
     const localizedOption = localizedProduct.options?.find((o) => o.id === option?.id) || localizedProduct.options?.[0]
     const order = {
@@ -5055,6 +5084,12 @@ async function handle(req, res) {
       photo_urls: input.photo_urls || [],
       payment_type: input.payment_type || 'deposit',
       amount_cents: amount,
+      product_amount_cents: productAmount,
+      shipping_cents: shippingQuote.cents || 0,
+      shipping_zone: shippingQuote.zone || '',
+      shipping_label: shippingQuote.label || '',
+      shipping_free: Boolean(shippingQuote.free),
+      shipping_days: shippingQuote.days || '',
       initial_payment_cents: initialPaymentAmount,
       deposit_percent: Number(product.deposit_percent || 0),
       paid_amount_cents: 0,
