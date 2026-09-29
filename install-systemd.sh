@@ -41,6 +41,10 @@ Environment=API_ROOT_DIR=${ROOT_DIR}/api-node
 Environment=DATA_DIR=${ROOT_DIR}/api-node/data
 Environment=UPLOAD_DIR=${ROOT_DIR}/api-node/uploads
 Environment=FRONTEND_DIST_DIR=${ROOT_DIR}/frontend/dist
+# nginx overwrites X-Forwarded-For, so the API may trust it to derive the real
+# client IP for rate limiting. Left empty, a client hitting the API port
+# directly can spoof the header and escape throttling.
+Environment=TRUST_PROXY_ADDRESSES=${TRUST_PROXY_ADDRESSES:-127.0.0.1}
 ExecStart=${NODE_BIN} ${ROOT_DIR}/api-node/server.mjs
 Restart=always
 RestartSec=3

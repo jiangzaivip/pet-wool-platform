@@ -2931,10 +2931,33 @@ function isProductReferencedBySiteContent(site = {}, product = {}) {
     || (Array.isArray(site.faq) && site.faq.some((faq) => JSON.stringify(faq).includes(slug)))
 }
 
+// Only nginx sits in front of the API and it overwrites X-Forwarded-For, so the
+// left-most entry is ours to trust. Trusting it unconditionally would let any
+// client mint a fresh rate-limit bucket per request by varying the header, which
+// defeats upload and lookup throttling entirely.
+//
+// TRUST_PROXY_ADDRESSES opts in explicitly and defaults to empty, so a direct
+// hit on the API port (or a deployment without nginx) cannot spoof its way past
+// throttling. Set it to the proxy's address, e.g. TRUST_PROXY_ADDRESSES=127.0.0.1
+function normalizeIp(value = '') {
+  const text = String(value || '').trim()
+  return text.startsWith('::ffff:') ? text.slice(7) : text
+}
+
+const trustedProxyAddresses = new Set(
+  String(process.env.TRUST_PROXY_ADDRESSES || '')
+    .split(',')
+    .map((item) => normalizeIp(item))
+    .filter(Boolean)
+)
+
 function clientIp(req) {
-  return String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()
-    || String(req.socket?.remoteAddress || '')
-    || 'unknown'
+  const peer = normalizeIp(req.socket?.remoteAddress)
+  if (trustedProxyAddresses.has(peer)) {
+    const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()
+    if (forwarded) return normalizeIp(forwarded)
+  }
+  return peer || 'unknown'
 }
 
 function checkUploadRateLimit(req) {
