@@ -135,7 +135,7 @@ site.socials
 - `/api/paypal/capture-order`
 - `/api/paypal/webhook`
 
-管理端站点配置提供 PayPal Client ID、Secret、Webhook ID、币种和启用开关。没有配置 Client ID/Secret 时，系统会按 `PAYPAL_MOCK` 或缺失凭据进入本地 mock 路径，方便开发和 E2E；正式上线需要设置 `PAYPAL_ENV=live`、填写 live 凭据，并在 PayPal 后台把 Webhook URL 配成：
+管理端站点配置提供 PayPal Client ID、Secret、Webhook ID、币种和启用开关。没有配置 Client ID/Secret 时，系统会按 `PAYPAL_MOCK` 或缺失凭据进入本地 mock 路径，方便开发和 E2E；正式上线需要在管理端把模式设为 `live`、填写 live 凭据，设置 `PAYPAL_MOCK=false`，并在 PayPal 后台把 Webhook URL 配成：
 
 ```text
 https://<正式域名>/api/paypal/webhook
@@ -172,14 +172,17 @@ ADMIN_ACCOUNTS_JSON=[{"email":"owner@example.com","password_hash":"<sha256>","ro
 
 分类页支持 `/collections/:category` URL，并继续兼容旧的 `?category=` 查询参数。分类页和商品详情页会输出 JSON-LD，包含 `ItemList`、`Product` 和面包屑结构化数据。
 
-首页和当前发布商品已改用站内 `/assets` 图片，不再依赖外部 Unsplash。当前 SVG 只是本地占位视觉；正式商业上线前应在后台替换为自有真实作品图或授权图片。
+`frontend/public/robots.txt`（须含一行 `Sitemap: `）和 `frontend/public/sitemap.xml` 会随前端构建产出到 `/robots.txt`、`/sitemap.xml`；`npm run smoke` 会校验两者，`npm run verify:core` 也会检查其有效性。客户文档页经 nginx 的 `/doc/` 暴露，来源为 `site-doc/`。
+
+首页 Hero 图仍是 Unsplash 外链（`frontend/src/views/Home.vue` 的 `heroImage`），商品与分类图已改用站内 `/assets`；`home-after` 等图目前是本地占位视觉。正式商业上线前应把 Hero 外链换成自有授权图片并配 fallback。
 
 ## 自动化测试
 
 测试入口：
 
 ```bash
-node test-results/e2e-check.mjs
+npm run verify:core   # 3 秒级快速闸门
+npm run test:e2e      # 全流程回归
 ```
 
 测试文档：

@@ -42,8 +42,20 @@ test-results/E2E_TEST_PLAN.md
 测试命令：
 
 ```bash
-node test-results/e2e-check.mjs
+npm run verify:core   # 快速闸门，日常改动后先跑
+npm run test:e2e      # 全流程回归
 ```
+
+回归入口（按成本从低到高）：
+
+```bash
+npm run verify:core   # ~3s，API 合约 + 页面渲染
+npm run smoke         # nginx/接口/robots.txt/sitemap.xml
+npm run test:currency # 汇率、支付金额、Webhook 幂等
+npm run test:admin    # 管理端
+```
+
+只有全部通过后才跑 `npm run test:e2e`（会重启 systemd 并写入真实 store.json）。
 
 当前覆盖：
 
@@ -59,7 +71,7 @@ node test-results/e2e-check.mjs
 - PayPal 模拟支付
 - 用户订单
 - 用户管理
-- 备份恢复
+- 备份恢复（含脱敏备份、完整密钥备份二次确认）
 - 商品/分类发布保护
 - 管理端订单详情
 - 管理端站点、支付和主题配置

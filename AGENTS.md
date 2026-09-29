@@ -1,0 +1,53 @@
+# pet-wool-platform (WoolBuddy) — Agent Instructions
+
+Pet wool-felt customization e-commerce site (宠物羊毛毡定制平台). Monorepo: `frontend/` is a Vue 3 + Vite + TypeScript storefront and `/admin` console; `api-node/` is the live API — one Node.js native-HTTP server (`server.mjs`, ~5.5k lines) over a JSON file store. `backend/` (Rust) and `docker-compose.yml` are early drafts, not used in current production. Docs and commit messages are mostly Chinese.
+
+## Commands (verified in root `package.json`)
+
+- Install: `npm install` then `npm --prefix frontend install`
+- Build frontend: `npm run build` (runs `vite build` via `--prefix frontend`; does NOT type-check — vue-tsc is a devDependency but not wired into any script; no linter configured)
+- Quick gate (pre-deploy, ~3s): `npm run verify:core` (= `node scripts/verify-core.mjs`) — API contracts + page render smoke, no fragile text assertions, no data writes. Non-zero exit on any failure.
+- Quick gate without browser: `SKIP_BROWSER=1 npm run verify:core`
+- Smoke check: `npm run smoke` (`scripts/smoke-check.sh`; override target with `BASE_URL=`/`API_URL=`/`API_ORIGIN=` env vars — `API_ORIGIN` defaults to `API_URL`, set it to `http://127.0.0.1:8082` when the site is served on a different origin)
+- Currency/payment invariants: `npm run test:currency` (three verify scripts; needs `node --experimental-strip-types` because they import `frontend/src/currency.ts` directly)
+- Admin console verify: `npm run test:admin`
+- Checkout display check: `node --experimental-strip-types scripts/verify-checkout-display.mjs` (not wired into any npm script; also imports `frontend/src/currency.ts`, so it needs the same flag)
+- Full E2E: `npm run test:e2e` (`node test-results/e2e-check.mjs`, Playwright)
+- Pre-deploy checks: `npm run production:check` and `npm run production:paypal-check`
+- Release archive: `npm run release:package` (`scripts/package-release.sh` → `releases/pet-wool-platform-release-<stamp>.tar.gz` + `.sha256`; needs a built `frontend/dist/`)
+
+## Running services (this host is the deploy box)
+
+- systemd units: `pet-wool-frontend-dev` (Vite on 127.0.0.1:5173), `pet-wool-api` (Node API on 127.0.0.1:8082); nginx listens on 8888 and proxies `/` → Vite, `/api`, `/uploads`, `/health` → API
+- nginx proxies the Vite **dev server**, so edits to `frontend/src` go live on 8888 without a build; `frontend/dist/` only matters for deploy
+- After `api-node/` or data-structure changes: `systemctl restart pet-wool-api`
+- Health: `curl -s http://127.0.0.1:8082/health`
+
+## Data — treat as production
+
+- The live database is `api-node/data/store.json` (gitignored). Never hand-edit it while `pet-wool-api` is running; change data via the admin console or scripts.
+- Back up before bulk changes or release: `node scripts/backup-data.mjs` → `api-node/backups/<timestamp>/` (store.json + uploads; keep last 10). Restore: `node scripts/restore-data.mjs --dry-run <dir>` then `--apply <dir>` (auto-creates a pre-restore backup).
+- E2E and cleanup scripts auto-clean test data with prefixes `commercial-`, `unpaid-`, `blocked-`, `hidden-`, `commercial-check-*`; manual cleanup: `node scripts/cleanup-e2e-data.mjs --apply --confirm-e2e-cleanup` (preview without flags).
+- Postgres is optional (`STORE_BACKEND=postgres` + `DATABASE_URL` in `.env`); default is JSON. Migration export: `npm run export:postgres`.
+
+## Conventions
+
+- Money is integer minor units in `*_cents` fields; the currency base is KRW with fixed rates (`fixed-krw-v1`).
+- The currency table is deliberately duplicated: `frontend/src/currency.ts` and `api-node/currency.mjs` must export identical `CURRENCY_RATE_VERSION`, `CURRENCY_BASE`, `CURRENCY_RATES`, `CURRENCY_DECIMALS`, `LANG_CURRENCY` — `npm run test:currency` fails on drift. Server payment snapshots are authoritative; client display conversion is an estimate.
+- All browser-side API calls, token handling, and error normalization go through `frontend/src/api.ts` — views must not bypass it.
+- In `api-node/server.mjs`, keep env/filesystem path derivation in the config block at the top; the server auto-loads `.env` from the project root.
+- PayPal credentials (Client ID/Secret/Webhook ID, mode, currency) are configured in the admin dashboard site config, never in `.env` — only technical switches like `PAYPAL_MOCK`, `PAYPAL_TIMEOUT_MS` live there.
+- Commit messages: short one-line summaries, typically Chinese.
+
+## Deploy
+
+`bash deploy.sh` is the only release path (see `DEPLOY.md`); the target must be explicit via `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_DIR`, `DEPLOY_KEY`, `DEPLOY_ENV_FILE`. Never set `DEPLOY_BOOTSTRAP_DATA=true` on an existing server; `DEPLOY_SKIP_BUILD=true` only when `frontend/dist/` is already built from verified source. Old docs describing manual copy-to-`/var/www` are obsolete.
+
+## Pitfalls
+
+- No unit-test framework or linter — verification means the verify scripts plus smoke/E2E against running services; E2E restarts systemd units, so it must run as root on the deploy host.
+- `test-results/e2e-check.mjs` hardcodes absolute `/root/pet-wool-platform/...` paths — it only works from this deployment location.
+- E2E mutates the real `store.json` (it snapshots/restores around payment tests) — don't run it against a server you can't afford to disturb, and clean up test data afterwards.
+- `api-node/backups/` may contain PayPal Secret/Webhook ID — treat as sensitive; never commit (already gitignored) and use the admin "脱敏备份" export for third parties.
+- `npm run smoke` now hard-requires `frontend/public/robots.txt` (must contain a `Sitemap: ` line), `frontend/public/sitemap.xml`, and nginx's `/doc/` (served from `site-doc/`) — a missing file there fails the smoke check, not the build.
+- `.env` files are gitignored except `*.example` templates; admin default login in dev is `admin@example.com` / `admin123456` and must be replaced before production.

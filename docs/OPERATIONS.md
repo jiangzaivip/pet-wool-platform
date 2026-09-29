@@ -4,6 +4,8 @@
 
 ## 服务和访问
 
+本文件描述**测试机 / 本机**拓扑（nginx 8888 + Vite 开发服务）。生产是 `deploy.sh` 发布的 Node 单体服务（systemd 单元 `pet-wool-platform`，nginx 443 反代到 `127.0.0.1:8888`），见 `DEPLOY.md`。
+
 - 官网：`http://127.0.0.1:8888/`
 - 管理端：`http://127.0.0.1:8888/admin`
 - 客户文档：`http://127.0.0.1:8888/doc/`
@@ -37,12 +39,13 @@ systemctl restart pet-wool-api
 
 ```bash
 cd /root/pet-wool-platform
-bash scripts/smoke-check.sh
+npm run verify:core
+npm run smoke
 node test-results/e2e-check.mjs
 node scripts/cleanup-orphan-uploads.mjs --missing-refs
 ```
 
-`scripts/smoke-check.sh` 会检查 8888 页面、API 健康、基础接口和安全响应头。完整 E2E 覆盖官网下单、账号、支付、管理端商品/分类/订单/用户/站点配置、备份恢复和移动端布局。
+`npm run verify:core` 是 3 秒级快速闸门（API 合约 + 页面渲染），任何改动后先跑它；`scripts/smoke-check.sh` 进一步检查 nginx 页面、API 健康、基础接口、安全响应头，以及 `robots.txt` / `sitemap.xml` 是否有效。完整 E2E 覆盖官网下单、账号、支付、管理端商品/分类/订单/用户/站点配置、备份恢复和移动端布局。
 
 ## 健康检查
 
