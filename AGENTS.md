@@ -12,6 +12,7 @@ Pet wool-felt customization e-commerce site (宠物羊毛毡定制平台). Monor
 - Currency/payment invariants: `npm run test:currency` (three verify scripts; needs `node --experimental-strip-types` because they import `frontend/src/currency.ts` directly)
 - Admin console verify: `npm run test:admin`
 - Translation key parity: `npm run test:i18n` (needs `node --experimental-strip-types`; fails if en/ko miss a customer-facing zh key)
+- API module imports: `npm run test:imports` — `node --check` only parses one file and never resolves import targets, so a module that exports a name it forgot to mark with `export` passes it and then kills the process on boot. This script parses `server.mjs`'s local imports and verifies each imported symbol actually exists.
 - Checkout display check: `node --experimental-strip-types scripts/verify-checkout-display.mjs` (not wired into any npm script; also imports `frontend/src/currency.ts`, so it needs the same flag)
 - Full E2E: `npm run test:e2e` (`node test-results/e2e-check.mjs`, Playwright)
 - Pre-deploy checks: `npm run production:check` and `npm run production:paypal-check`
@@ -57,6 +58,7 @@ Pet wool-felt customization e-commerce site (宠物羊毛毡定制平台). Monor
 - `npm run smoke` now hard-requires `frontend/public/robots.txt` (must contain a `Sitemap: ` line), `frontend/public/sitemap.xml`, and nginx's `/doc/` (served from `site-doc/`) — a missing file there fails the smoke check, not the build.
 - `.env` files are gitignored except `*.example` templates; admin default login in dev is `admin@example.com` / `admin123456` and must be replaced before production.
 - With `NODE_ENV=production` the API refuses to start unless PayPal is live with a webhook ID, `PUBLIC_BASE_URL` is HTTPS, `GOOGLE_DEMO_LOGIN` is off, the admin password is not the published default, and `USER_TOKEN_SECRET` is set. PayPal is currently sandbox, so a production start fails by design.
+- New `api-node/*.mjs` must export every symbol `server.mjs` imports, and must not read module-scope values declared further down (TDZ crash at boot). `npm run test:imports` covers both.
 - Guest checkout has no user token: the buyer's proof of ownership is `x-payment-secret` (from `/paypal/create-order`) or, for the first payment, `x-order-secret` (the order's `client_request_id`). These proofs are OR-ed — combining them with `||` or `find(Boolean)` short-circuits on the first rejection string and wrongly denies callers holding the other valid proof.
 - `api-node/backups/` holds customer PII and the PayPal Secret; files are chmod 0600 and the directory 0700. A daily `pet-wool-backup.timer` writes them. Its unit must not set `ProtectHome=true` (the project lives under `/root`, and the service dies with 200/CHDIR).
 - Systemd drop-in dirs under `/etc/systemd/system/<unit>.service.d/` are ignored on this host; edit the unit file itself.

@@ -143,6 +143,42 @@ https://<正式域名>/api/paypal/webhook
 
 Webhook ID 不是 URL，应填写 PayPal 创建 Webhook 后生成的 ID。
 
+## 运费
+
+运费在 `api-node/shipping.mjs` 中按目的地区域报价，规则本身是数据（存在
+`store.site.shipping`），区域归属错了可以直接改，不用发版。
+
+**默认关闭。** `shipping.enabled` 不是 `true` 时运费一律为 0，结账金额等于商品
+价，与现在的线上价格一致。开启后请先确认费率符合实际，否则等于给在售商品加价。
+
+配置项：
+
+| 字段 | 含义 |
+| --- | --- |
+| `enabled` | 总开关，默认 `false` |
+| `zones` | 各区域费率，`cents` 为基准币种（KRW）最小单位 |
+| `country_zones` | 国家码到区域的映射，覆盖内置默认表 |
+| `free_shipping_threshold_cents` | 商品金额达到该值免运费 |
+| `note` | 前台说明文案 |
+
+关键行为：运费在**建单时算一次**并写进订单，之后永不重算。制作期间调整费率不会
+改变客户待付金额，历史订单也保留成交时的规则。订单同时记录
+`product_amount_cents` / `shipping_cents` / `shipping_zone` / `shipping_free`。
+
+之所以要固化：`payment-amounts.mjs` 把 `order.amount_cents` 当作唯一应付总额，
+只在报价时存在的运费对支付校验不可见，capture 要么被拒要么少收。
+
+`POST /api/shipping-quote`（入参 `country`、`subtotal_cents`）供前台试算。
+
+## 前端错误上报
+
+前台异常上报到自有接口 `POST /api/client-reports`，不进任何第三方 SaaS。
+上报内容只有错误级别、脱敏消息、当前路由、语言环境；表单值、订单号、请求体都
+不发送。存储前服务端二次清洗（邮箱、URL、长数字串、订单号格式全部替换），
+每 IP 每分钟 10 条，最多保留 200 条。
+
+管理端用 `GET /api/admin/client-reports` 查看，`DELETE` 清空。
+
 ## Google 登录
 
 默认开发数据仍保留 demo 登录能力。配置真实 Google OAuth 后：
@@ -176,13 +212,26 @@ ADMIN_ACCOUNTS_JSON=[{"email":"owner@example.com","password_hash":"<sha256>","ro
 
 首页 Hero 图仍是 Unsplash 外链（`frontend/src/views/Home.vue` 的 `heroImage`），商品与分类图已改用站内 `/assets`；`home-after` 等图目前是本地占位视觉。正式商业上线前应把 Hero 外链换成自有授权图片并配 fallback。
 
+评价实拍图有 WebP 版本：`scripts/optimize-review-images.py` 生成同名 `.webp`
+（9.4MB → 3.4MB，EXIF 一并剥离），服务端下发评价数据时若存在 `.webp` 就优先返回
+它，原 JPEG 保留作为回退。新增评价图后重跑该脚本即可。
+
+服务端按 URL 注入 meta（title / description / canonical / OG / JSON-LD）。SPA 的
+空壳 HTML 对不执行 JS 的爬虫（微信、小红书等链接预览）没有价值，所以注入放在
+服务端，而不是只靠前端 `setHead()`。
+
 ## 自动化测试
 
 测试入口：
 
 ```bash
-npm run verify:core   # 3 秒级快速闸门
-npm run test:e2e      # 全流程回归
+npm run verify:core      # 3 秒级快速闸门
+npm run test:imports     # api-node 模块导入与导出符号校验
+npm run test:i18n        # en/ko 键覆盖
+npm run test:currency    # 货币与支付金额不变量
+npm run test:admin       # 管理台
+npm run smoke            # 站点与 API 冒烟
+npm run test:e2e         # 全流程回归
 ```
 
 测试文档：
