@@ -164,8 +164,14 @@ set -euo pipefail
 umask 077
 
 backup_exists=false
+deploy_ok=false
 rollback() {
-  if [ "${backup_exists}" != "true" ]; then
+  # Runs on every exit path, including the explicit `exit 1` below. A plain
+  # `exit` does NOT fire the ERR trap, so the previous release used to stay
+  # broken on disk while the script reported failure: the site was left down
+  # until someone restored it by hand. An EXIT trap keyed on deploy_ok covers
+  # both error exits and explicit exits.
+  if [ "${deploy_ok}" = "true" ] || [ "${backup_exists}" != "true" ]; then
     return
   fi
   echo "Deployment verification failed; restoring previous release..." >&2
@@ -176,7 +182,7 @@ rollback() {
   sudo env SERVICE_NAME="${SERVICE_NAME}" SERVICE_HOST="${SERVICE_HOST}" SERVICE_PORT="${SERVICE_PORT}" SERVICE_SERVE_FRONTEND="${SERVICE_SERVE_FRONTEND}" bash "${REMOTE_DIR}/install-systemd.sh" >/tmp/pet-wool-rollback.log 2>&1 || true
   echo "Previous release restored. Details: /tmp/pet-wool-rollback.log" >&2
 }
-trap 'rollback' ERR
+trap rollback EXIT
 
 if [ -d "${REMOTE_DIR}" ]; then
   sudo tar -czf "${REMOTE_BACKUP}" -C "${REMOTE_DIR}" .
@@ -208,6 +214,12 @@ fi
 
 sudo npm ci --prefix "${REMOTE_DIR}" --omit=dev --ignore-scripts
 
+# Boot the API once with the real production environment before touching the
+# live service. assertProductionRuntime only runs under NODE_ENV=production, so
+# every other gate can pass while production still refuses to start.
+sudo bash -c 'set -a; . "$1"; set +a; export PROJECT_ROOT_DIR="$2"; node "$3"' \
+  _ "${REMOTE_DIR}/.env" "${REMOTE_DIR}" "${REMOTE_DIR}/scripts/verify-production-start.mjs"
+
 sudo bash -c 'set -a; . "$1"; set +a; export NODE_ENV=production PROJECT_ROOT_DIR="$2"; node "$3"' \
   _ "${REMOTE_DIR}/.env" "${REMOTE_DIR}" "${REMOTE_DIR}/scripts/production-check.mjs"
 sudo bash -c 'set -a; . "$1"; set +a; export NODE_ENV=production PROJECT_ROOT_DIR="$2"; node "$3"' \
@@ -232,6 +244,6 @@ for attempt in $(seq 1 20); do
 done
 
 BASE_URL="http://127.0.0.1:${SERVICE_PORT}" API_URL="http://127.0.0.1:${SERVICE_PORT}" bash "${REMOTE_DIR}/scripts/smoke-check.sh"
-trap - ERR
+deploy_ok=true
 echo "Deployment verified: ${SERVICE_NAME} on port ${SERVICE_PORT}"
 REMOTE_SCRIPT
