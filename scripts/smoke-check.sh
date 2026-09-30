@@ -67,6 +67,49 @@ for (const key of required) {
 curl -fsS "${API_URL}/api/site" >/dev/null
 curl -fsS "${API_URL}/api/categories" >/dev/null
 curl -fsS "${API_URL}/api/blog" >/dev/null
+
+# --- 图标资源 ---
+# The site shipped with no favicon and no manifest, so every page load and every
+# crawler hit logged a 404 for both. A missing icon is invisible to an API
+# contract gate, so pin the exact files and their content types here.
+echo "Checking icons and manifest"
+node -e '
+const expected = {
+  "/favicon.ico": "image/x-icon",
+  "/favicon.svg": "image/svg+xml",
+  "/apple-touch-icon.png": "image/png",
+  "/icon-192.png": "image/png",
+  "/icon-512.png": "image/png",
+  "/icon-maskable-512.png": "image/png",
+  "/manifest.json": "application/json",
+}
+for (const [path, type] of Object.entries(expected)) {
+  const res = await fetch(process.argv[1] + path, { signal: AbortSignal.timeout(10000) })
+  const got = (res.headers.get("content-type") || "").split(";")[0].trim()
+  if (res.status !== 200) throw new Error(`${path} returned ${res.status}, expected 200`)
+  if (got !== type) throw new Error(`${path} content-type is ${got || "(none)"}, expected ${type}`)
+}
+' "${BASE_URL}"
+
+# The SPA shell must advertise them, or a saved bookmark / crawler sees a bare page.
+INDEX_HTML="$(curl -fsS "${BASE_URL}/")"
+for needle in 'rel="icon"' 'rel="apple-touch-icon"' 'rel="manifest"' 'theme-color'; do
+  case "${INDEX_HTML}" in
+    *"${needle}"*) ;;
+    *) echo "index.html is missing ${needle}" >&2; exit 1 ;;
+  esac
+done
+
+# The manifest must be valid JSON with the icons it promises.
+node -e '
+const manifest = JSON.parse(process.argv[1])
+if (!Array.isArray(manifest.icons) || !manifest.icons.length) throw new Error("manifest has no icons")
+if (!manifest.name || !manifest.start_url) throw new Error("manifest is missing name/start_url")
+for (const icon of manifest.icons) {
+  if (!icon.src || !icon.sizes || !icon.type) throw new Error(`manifest icon is incomplete: ${JSON.stringify(icon)}`)
+}
+if (!manifest.icons.some((i) => i.purpose === "maskable")) throw new Error("manifest has no maskable icon")
+' "$(curl -fsS "${BASE_URL}/manifest.json")"
 curl -fsS -X POST "${API_URL}/api/bot/answer" \
   -H 'Content-Type: application/json' \
   --data '{"question":"价格是多少","lang":"zh"}' >/dev/null

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="WoolBuddy">
+  <defs>
+    <linearGradient id="pad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="rgb(159, 106, 70)"/>
+      <stop offset="1" stop-color="rgb(90, 54, 36)"/>
+    </linearGradient>
+    <clipPath id="squircle"><rect width="512" height="512" rx="113" ry="113"/></clipPath>
+  </defs>
+  <g clip-path="url(#squircle)">
+    <rect width="512" height="512" fill="rgb(246, 239, 226)"/>
+    <ellipse cx="166" cy="120" rx="230" ry="180" fill="rgb(231, 239, 229)"/>
+    <ellipse cx="256" cy="307" rx="83" ry="68" fill="url(#pad)"/>
+    <g>
+      <circle cx="130" cy="212" r="34" fill="rgb(220, 178, 135)"/>
+      <circle cx="196" cy="181" r="34" fill="rgb(224, 183, 141)"/>
+      <circle cx="316" cy="181" r="34" fill="rgb(224, 183, 141)"/>
+      <circle cx="382" cy="212" r="34" fill="rgb(220, 178, 135)"/>
+    </g>
+    <path d="M212 288a52 52 0 0 0-30 44" fill="none" stroke="rgb(246, 239, 226)" stroke-opacity=".6" stroke-width="7" stroke-linecap="round"/>
+    <rect x="1" y="1" width="510" height="510" rx="113" fill="none" stroke="rgb(188, 178, 156)" stroke-opacity=".43" stroke-width="3"/>
+  </g>
+</svg>

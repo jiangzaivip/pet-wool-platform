@@ -250,6 +250,27 @@ if (process.env.SKIP_BROWSER !== '1') {
   }
 }
 
+// --- 测试夹具探针：付费/邮件探针商品绝不能出现在生产 ---
+// paypal-small-test-001-usd shipped to production: reachable via the public
+// products API, listed in sitemap.xml, and chargeable on PAYPAL_ENV=live. The
+// old cleanup script missed it because it hard-coded a different slug and only
+// rewrote the JSON store while production runs on PostgreSQL. Fixture slugs are
+// invisible to a contract gate (a fixture IS a valid product), so pin a probe.
+const FIXTURE_SLUG_PATTERN = /(^|[-_])(test|testing|fixture|demo|probe|qa)([-_]|$)|-usd$|usd-test/i
+try {
+  const [productsRes, sitemapRes] = await Promise.all([get('/api/products'), get('/sitemap.xml')])
+  const products = productsRes.ok ? await productsRes.json() : []
+  const sitemapText = sitemapRes.ok ? await sitemapRes.text() : ''
+  const leaked = (Array.isArray(products) ? products : [])
+    .map((product) => String(product?.slug || ''))
+    .filter((slug) => FIXTURE_SLUG_PATTERN.test(slug))
+  const inSitemap = (Array.isArray(products) ? products : [])
+    .map((product) => String(product?.slug || ''))
+    .filter((slug) => slug && FIXTURE_SLUG_PATTERN.test(slug) && sitemapText.includes(`/products/${slug}`))
+  if (!leaked.length && !inSitemap.length) ok('no payment/email test fixture reachable on public products API or sitemap')
+  else fail('test fixture leaked', `public API slugs: ${leaked.join(', ') || 'none'}; in sitemap: ${inSitemap.join(', ') || 'none'}`)
+} catch (e) { fail('test fixture probe', e.message) }
+
 const seconds = ((Date.now() - started) / 1000).toFixed(1)
 console.log(`\nCore gate: ${passed} passed, ${failures.length} failed, ${seconds}s`)
 if (failures.length) {

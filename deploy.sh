@@ -98,6 +98,10 @@ RELEASE_FILES=(
   # that holds live credentials. It runs from the development machine instead.
   scripts/verify-production-start.mjs
   scripts/cleanup-production-test-data.mjs
+  scripts/remove-test-fixtures.mjs
+  scripts/generate-icons.py
+  deploy/nginx/woolbuddy.shop.conf
+  deploy/install-nginx.sh
   start.sh stop.sh restart.sh install-systemd.sh
   deploy
   deploy.sh

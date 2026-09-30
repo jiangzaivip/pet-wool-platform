@@ -4,6 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>WoolBuddy</title>
+    <!-- Icons live in the static head, not in setHead(), so crawlers and
+         bookmarklets see them without executing the bundle. setHead() only
+         rewrites SEO/canonical tags, never these. -->
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#f6efe2" />
+    <meta name="apple-mobile-web-app-title" content="WoolBuddy" />
+    <meta name="mobile-web-app-capable" content="yes" />
   </head>
   <body>
     <div id="app"></div>
