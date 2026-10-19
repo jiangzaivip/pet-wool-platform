@@ -28,6 +28,9 @@ cat > "${SERVICE_FILE}" <<SERVICE
 [Unit]
 Description=Pet Wool Platform
 After=network.target
+# A crashed or restart-looping service used to be invisible: nothing was
+# watching, and the structured log just stopped. OnFailure mails the operator.
+OnFailure=pet-wool-alert@%n.service
 
 [Service]
 Type=simple

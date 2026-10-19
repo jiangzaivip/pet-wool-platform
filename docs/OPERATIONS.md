@@ -11,7 +11,7 @@
 - 客户文档：`http://127.0.0.1:8888/doc/`
 - 前端服务：`pet-wool-frontend-dev`，Vite 监听 `127.0.0.1:5173`
 - API 服务：`pet-wool-api`，Node API 监听 `127.0.0.1:8082`
-- 对外入口：nginx 监听 `8888`，代理 `/api`、`/uploads`、`/health`
+- 对外入口：nginx 监听 `127.0.0.1:8888`（2026-10 起仅回环，公网 IP:8888 已不可达）以及 `127.0.0.1:5173`（Vite 开发服务），代理 `/api`、`/uploads`、`/health`
 
 ```bash
 systemctl is-active pet-wool-frontend-dev pet-wool-api nginx
@@ -46,6 +46,8 @@ node scripts/cleanup-orphan-uploads.mjs --missing-refs
 ```
 
 `npm run verify:core` 是 3 秒级快速闸门（API 合约 + 页面渲染），任何改动后先跑它；`scripts/smoke-check.sh` 进一步检查 nginx 页面、API 健康、基础接口、安全响应头，以及 `robots.txt` / `sitemap.xml` 是否有效。完整 E2E 覆盖官网下单、账号、支付、管理端商品/分类/订单/用户/站点配置、备份恢复和移动端布局。
+
+`verify:core` 的后台合约检查需要能登录管理端：默认口令未改时会用文档里的默认值，本机口令已换成 scrypt 强口令，因此要先导出 `ADMIN_EMAIL` / `ADMIN_PASSWORD`，否则它会打印 `SKIP admin checks` 但仍以 0 退出（看起来全绿，实际少跑 4 项）。CI 走 `.github/workflows/ci.yml`，用临时目录起 API + `SKIP_BROWSER=1` 跑同一套门禁。
 
 ## 健康检查
 
@@ -85,7 +87,7 @@ LOG_DIR=/var/log/pet-wool-platform
 LOG_FILE=/var/log/pet-wool-platform/pet-wool-structured.log
 ```
 
-正式环境建议使用 `logrotate` 或日志平台按天轮转 `pet-wool-structured.log`，避免日志文件无限增长。
+正式环境已通过 `/etc/logrotate.d/pet-wool` 轮转（每日、单文件 50M 上限、保留 7 份、`0640 root:root`）；journald 已设 `SystemMaxUse=500M`。生产机上的对应文件随仓库 `deploy/pet-wool-logrotate.conf` 发布，改配置时同步两边。
 
 ## 备份
 
@@ -198,7 +200,11 @@ GOOGLE_DEMO_LOGIN=false
 
 ## Postgres 导出
 
-当前 API 仍以 `api-node/data/store.json` 为主数据源。迁库前可先生成 Postgres staging SQL：
+生产（`STORE_BACKEND=postgres`）的主数据源已经是 PostgreSQL 表 `platform_runtime_store(id=1)`，`store.json` 只是同目录下的同步影子副本。日常备份走 `sudo -n bash -c 'set -a; . ./.env; set +a; node scripts/backup-sql.mjs'`：产出 `api-node/sql-backups/store-<时间戳>.sql`（pg_dump）与 `uploads-<时间戳>.tar.gz`（客户照片），权限 0600、目录 0700、保留 14 份，由 `pet-wool-sql-backup.timer` 每日执行。
+
+异地副本：另一台机器上的 `pet-wool-offsite.timer` 每天 04:10 左右执行 `scripts/offsite-backup-pull.sh`，用部署密钥把上述两类文件拉到 `/root/pet-wool-offsite/snapshots/<UTC 时间戳>/`，保留 21 天且至少留 3 份。生产落盘失败或服务启动失败会触发 `OnFailure=pet-wool-alert@%n.service`，由 `scripts/notify-failure.sh` 用 `.env` 里的 SMTP 配置发邮件到 `NOTIFY_ADMIN_EMAIL`。
+
+迁库前的 staging 导出仍可用（仅 JSON → SQL 生成，不切换线上数据源）：
 
 ```bash
 cd /root/pet-wool-platform

@@ -100,6 +100,10 @@ RELEASE_FILES=(
   scripts/cleanup-production-test-data.mjs
   scripts/remove-test-fixtures.mjs
   scripts/hide-fixture-products.mjs
+  scripts/archive-non-krw-orders.mjs
+  scripts/inspect-order-currency.mjs
+  scripts/notify-failure.sh
+  deploy/pet-wool-alert@.service
   scripts/generate-icons.py
   deploy/nginx/woolbuddy.shop.conf
   deploy/install-nginx.sh
@@ -198,12 +202,39 @@ rollback() {
     return
   fi
   echo "Deployment verification failed; restoring previous release..." >&2
+
+  # Never destroy the live tree on the strength of an archive nobody checked.
+  # If the backup is unreadable we leave the directory alone and say so: a
+  # half-restored release is worse than a broken one that can still be inspected.
+  if ! sudo tar -tzf "${REMOTE_BACKUP}" >/dev/null 2>&1; then
+    echo "ROLLBACK ABORTED: backup archive ${REMOTE_BACKUP} is unreadable." >&2
+    echo "The release directory was left untouched. Inspect it before retrying." >&2
+    return
+  fi
+
   sudo systemctl stop "${SERVICE_NAME}" || true
-  sudo rm -rf "${REMOTE_DIR}"
-  sudo mkdir -p "${REMOTE_DIR}"
-  sudo tar -xzf "${REMOTE_BACKUP}" -C "${REMOTE_DIR}"
+  # Extract over the existing tree instead of `rm -rf` + extract: api-node/data,
+  # api-node/uploads and logs/ are not in the release and used to be wiped here,
+  # which turned a rollback into data loss.
+  if ! sudo tar -xzf "${REMOTE_BACKUP}" -C "${REMOTE_DIR}" --overwrite 2>/tmp/pet-wool-rollback-extract.log; then
+    echo "ROLLBACK INCOMPLETE: extraction failed, see /tmp/pet-wool-rollback-extract.log" >&2
+    return
+  fi
+  if ! sudo test -f "${REMOTE_DIR}/api-node/server.mjs"; then
+    echo "ROLLBACK INCOMPLETE: restored tree has no api-node/server.mjs" >&2
+    return
+  fi
+
   sudo env SERVICE_NAME="${SERVICE_NAME}" SERVICE_HOST="${SERVICE_HOST}" SERVICE_PORT="${SERVICE_PORT}" SERVICE_SERVE_FRONTEND="${SERVICE_SERVE_FRONTEND}" bash "${REMOTE_DIR}/install-systemd.sh" >/tmp/pet-wool-rollback.log 2>&1 || true
-  echo "Previous release restored. Details: /tmp/pet-wool-rollback.log" >&2
+  sudo systemctl restart "${SERVICE_NAME}" || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -fsS -m 3 "http://127.0.0.1:${SERVICE_PORT}/health" >/dev/null 2>&1; then
+      echo "Previous release restored and serving. Details: /tmp/pet-wool-rollback.log" >&2
+      return
+    fi
+    sleep 2
+  done
+  echo "Previous release restored but /health is not answering — check the service by hand." >&2
 }
 trap rollback EXIT
 

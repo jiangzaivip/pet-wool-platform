@@ -1,0 +1,13 @@
+[Unit]
+Description=Pull WoolBuddy production backups to this host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=DEPLOY_KEY=/root/pet-wool-platform/.deploy/production_ed25519
+Environment=PROD_HOST=ubuntu@43.155.164.232
+Environment=OFFSITE_DIR=/root/pet-wool-offsite
+Environment=KEEP_DAYS=21
+ExecStart=/bin/bash /root/pet-wool-platform/scripts/offsite-backup-pull.sh
+TimeoutStartSec=900

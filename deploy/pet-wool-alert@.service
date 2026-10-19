@@ -1,0 +1,10 @@
+[Unit]
+# Instance name is the failed unit: `pet-wool-alert@pet-wool-platform.service`.
+Description=WoolBuddy failure notification for %i
+
+[Service]
+Type=oneshot
+# No ProtectHome/ReadWritePaths: the notifier must run even when the thing that
+# broke is the application directory itself.
+ExecStart=/bin/bash /opt/pet-wool-platform/scripts/notify-failure.sh %i
+TimeoutStartSec=60

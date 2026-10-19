@@ -1,0 +1,83 @@
+name: CI
+
+# Every gate in this repo used to be manual, so a red gate could sit for weeks
+# unnoticed. This runs the same commands the deploy path trusts, on the same
+# Node major as production.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NODE_ENV: development
+      STORE_BACKEND: json
+      PAYPAL_MOCK: 'true'
+      PAYPAL_ENV: sandbox
+      ADMIN_EMAIL: admin@example.com
+      ADMIN_PASSWORD: admin123456
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      - name: Install
+        run: |
+          npm install
+          npm --prefix frontend install
+
+      - name: Type check
+        run: npm --prefix frontend run typecheck
+
+      - name: Build storefront
+        run: npm run build
+
+      - name: Import graph (every server.mjs import resolves)
+        run: npm run test:imports
+
+      - name: Translation parity
+        run: npm run test:i18n
+
+      - name: Currency and payment invariants
+        run: npm run test:currency
+
+      - name: Admin console
+        run: npm run test:admin
+
+      - name: Production-start refusal matrix
+        run: npm run test:prod-start
+
+      - name: Boot API and run the core contract gate
+        run: |
+          rm -rf /tmp/pw-ci && mkdir -p /tmp/pw-ci/data /tmp/pw-ci/uploads
+          PORT=8099 HOST=127.0.0.1 \
+            DATA_DIR=/tmp/pw-ci/data UPLOAD_DIR=/tmp/pw-ci/uploads \
+            PUBLIC_BASE_URL=http://127.0.0.1:8099 \
+            node api-node/server.mjs > /tmp/pw-ci/server.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8099/health >/dev/null && break
+            sleep 1
+          done
+          # SKIP_BROWSER: no Playwright in CI; the contract checks are the point.
+          SKIP_BROWSER=1 BASE_URL=http://127.0.0.1:8099 API_URL=http://127.0.0.1:8099 npm run verify:core
+
+      - name: Dependency audit (production dependencies)
+        run: npm audit --omit=dev --registry=https://registry.npmjs.org
+
+      - name: Server log on failure
+        if: failure()
+        run: tail -80 /tmp/pw-ci/server.log || true
