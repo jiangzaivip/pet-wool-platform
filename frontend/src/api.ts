@@ -37,7 +37,7 @@ export type ProductOption = { id: string; name: string; price_cents: number; tra
 export type Faq = { id: string; question: string; answer: string; translations?: Record<string, any> }
 export type SiteSettings = Record<string, any>
 export type Order = Record<string, any>
-export type SupportContact = { key: 'kakao' | 'whatsapp' | 'email'; label: string; value?: string; url: string; external: boolean }
+export type SupportContact = { key: 'kakao' | 'whatsapp' | 'email'; label: string; value?: string; url: string; external: boolean; ctaKey: string }
 
 declare global {
   interface Window {
@@ -296,6 +296,7 @@ export function supportContacts(site: SiteSettings = {}, emailLabel = 'Email'): 
       value: 'WoolBuddy',
       url: 'https://pf.kakao.com/_UWErX',
       external: true,
+      ctaKey: 'support.kakaoCta',
     },
     {
       key: 'whatsapp' as const,
@@ -303,8 +304,9 @@ export function supportContacts(site: SiteSettings = {}, emailLabel = 'Email'): 
       value: 'WoolBuddy',
       url: 'https://wa.me/8613583155893',
       external: true,
+      ctaKey: 'support.whatsappCta',
     },
-    validEmail ? { key: 'email' as const, label: emailLabel, url: `mailto:${validEmail}`, external: false } : null,
+    validEmail ? { key: 'email' as const, label: emailLabel, url: `mailto:${validEmail}`, external: false, ctaKey: 'support.emailCta' } : null,
   ].filter(Boolean) as SupportContact[]
 }
 

@@ -66,4 +66,5 @@ Pet wool-felt customization e-commerce site (宠物羊毛毡定制平台). Monor
 - `assertProductionRuntime` only runs under `NODE_ENV=production`, so no local gate exercises it. Run `scripts/verify-production-start.mjs` on the deploy host; it is wired into deploy.sh for exactly this reason.
 - The release file list in `deploy.sh` is explicit — a new script is not deployed until it is added to `RELEASE_FILES`. `verify:core` now asserts every `api-node/*.mjs` appears there, because a missing module makes the remote API fail to boot, not degrade.
 - Verify scripts can pass a broken assertion and still exit 0 (a throw in `finally`). Never trust the exit code alone — read the output.
+- The deploy host runs Node 18 while the dev box runs Node 22: `node -e` there is CommonJS, so any top-level `await` (or ESM-only syntax) in a smoke probe dies with a SyntaxError and takes the whole deploy down with it (rollback fires). Keep deploy-time probes to CommonJS `node -e` or plain curl/bash.
 - `.env` values already present in the process environment win over the file. Anything testing `.env` precedence must clear inherited vars first (`VERIFY_START_CLEAN_ENV=1`).

@@ -220,7 +220,7 @@ watch(locale, loadSupport)
             :href="supportContactUrl(link)"
             :target="link.external ? '_blank' : undefined"
             :rel="link.external ? 'noopener noreferrer' : undefined"
-          >{{ t('support.contactCta') }}</a>
+          >{{ t(link.ctaKey) }}</a>
           <RouterLink v-if="!contactLinks.length" class="button primary" to="/order">{{ t('support.startOrder') }}</RouterLink>
         </div>
       </section>

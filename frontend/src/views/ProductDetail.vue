@@ -294,7 +294,7 @@ watch(() => route.params.slug, load)
             :href="supportUrlForProduct()"
             :target="supportContact.external ? '_blank' : undefined"
             :rel="supportContact.external ? 'noopener noreferrer' : undefined"
-          >{{ t('support.contactCta') }}</a>
+          >{{ t(supportContact.ctaKey) }}</a>
           <RouterLink v-else class="button ghost" to="/support">{{ t('detail.consult') }}</RouterLink>
         </div>
         <div class="assurance-grid">

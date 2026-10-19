@@ -73,23 +73,31 @@ curl -fsS "${API_URL}/api/blog" >/dev/null
 # crawler hit logged a 404 for both. A missing icon is invisible to an API
 # contract gate, so pin the exact files and their content types here.
 echo "Checking icons and manifest"
-node -e '
-const expected = {
-  "/favicon.ico": "image/x-icon",
-  "/favicon.svg": "image/svg+xml",
-  "/apple-touch-icon.png": "image/png",
-  "/icon-192.png": "image/png",
-  "/icon-512.png": "image/png",
-  "/icon-maskable-512.png": "image/png",
-  "/manifest.json": "application/json",
+# Probe with curl rather than node fetch: the deploy host runs Node 18, where
+# `node -e` is CommonJS and a top-level await in the probe killed the smoke
+# check (and with it every deploy) before the icons were ever verified.
+check_asset() {
+  local path="$1" expected="$2" got
+  got="$(curl -sS -o /dev/null -w '%{http_code} %{content_type}' "${BASE_URL}${path}" | tr -d '\r')" || true
+  local status="${got%% *}"
+  local type="${got#* }"
+  type="$(printf '%s' "${type}" | cut -d';' -f1 | tr -d '[:space:]')"
+  if [ "${status}" != "200" ]; then
+    echo "${path} returned ${status:-no response}, expected 200" >&2
+    exit 1
+  fi
+  if [ "${type}" != "${expected}" ]; then
+    echo "${path} content-type is ${type:-none}, expected ${expected}" >&2
+    exit 1
+  fi
 }
-for (const [path, type] of Object.entries(expected)) {
-  const res = await fetch(process.argv[1] + path, { signal: AbortSignal.timeout(10000) })
-  const got = (res.headers.get("content-type") || "").split(";")[0].trim()
-  if (res.status !== 200) throw new Error(`${path} returned ${res.status}, expected 200`)
-  if (got !== type) throw new Error(`${path} content-type is ${got || "(none)"}, expected ${type}`)
-}
-' "${BASE_URL}"
+check_asset /favicon.ico image/x-icon
+check_asset /favicon.svg image/svg+xml
+check_asset /apple-touch-icon.png image/png
+check_asset /icon-192.png image/png
+check_asset /icon-512.png image/png
+check_asset /icon-maskable-512.png image/png
+check_asset /manifest.json application/json
 
 # The SPA shell must advertise them, or a saved bookmark / crawler sees a bare page.
 INDEX_HTML="$(curl -fsS "${BASE_URL}/")"
