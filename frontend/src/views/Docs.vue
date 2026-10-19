@@ -3,8 +3,11 @@ import { onMounted } from 'vue'
 import { setHead } from '../head'
 
 onMounted(() => {
+  // Delivery/ops notes, not customer content: keep it out of the index even if
+  // someone links to it. The server-side sitemap no longer lists /doc/.
   setHead('客户文档 - WoolBuddy', 'WoolBuddy 当前交付入口、功能范围、运维文档和测试验证清单。', {
-    canonical: `${window.location.origin}/doc/`
+    canonical: `${window.location.origin}/doc/`,
+    robots: 'noindex,nofollow'
   })
 })
 </script>

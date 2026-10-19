@@ -56,6 +56,12 @@ const acceptedPhotoTypes = ['image/jpeg', 'image/png', 'image/webp']
 const draftKey = 'pet-wool-order-draft-v1'
 const publicPaymentTypes = ['deposit', 'full']
 const newClientRequestId = () => `order-${Date.now()}-${Math.random().toString(16).slice(2)}`
+// The order's own client_request_id is a guest's only proof of ownership when
+// the first payment is opened, and the form rotates it after a successful
+// submit so the next order gets a fresh id. Remember which id created each
+// order, otherwise the POST that follows the rotation is rejected with 403 and
+// the guest never gets a PayPal button.
+const orderSecrets = ref<Record<string, string>>({})
 const form = reactive({
   client_request_id: newClientRequestId(),
   product_id: '',
@@ -612,6 +618,7 @@ async function submit() {
       body: JSON.stringify(payload)
     })
     if (seq !== submitSeq) return
+    if (result?.id && payload.client_request_id) orderSecrets.value[result.id] = payload.client_request_id
     adoptServerOrderSummary(result)
     draftEnabled.value = false
     clearDraft()
@@ -669,7 +676,7 @@ async function requestPaypalOrder(orderId: string) {
   // Guests hold no user token, so the first payment is authorised by the
   // order's own client_request_id, which this browser generated and kept in
   // the local draft. Signed-in customers are matched by email instead.
-  const orderSecret = String(form.client_request_id || '').trim()
+  const orderSecret = String(orderSecrets.value[orderId] || form.client_request_id || '').trim()
   const result = await api<any>('/paypal/create-order', {
     method: 'POST',
     headers: orderSecret ? { 'x-order-secret': orderSecret } : {},

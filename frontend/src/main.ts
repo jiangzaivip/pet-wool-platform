@@ -50,6 +50,21 @@ router.beforeEach((to) => {
   return true
 })
 
+// A deploy replaces every hashed chunk, so a tab that has been open across a
+// release fails its next dynamic import and renders nothing. Reload once (the
+// guard flag prevents a loop when the network itself is down).
+router.onError((error) => {
+  const message = String((error as any)?.message || '')
+  if (!/Failed to fetch dynamically imported module|Importing a module script failed|Loading chunk/i.test(message)) return
+  try {
+    if (sessionStorage.getItem('chunk-reload-at')) return
+    sessionStorage.setItem('chunk-reload-at', String(Date.now()))
+  } catch {
+    return
+  }
+  window.location.reload()
+})
+
 // Installed before mount so a failure during the first render is still reported.
 installErrorReporting()
 

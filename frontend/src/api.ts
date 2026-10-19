@@ -1,6 +1,9 @@
 import { formatMinorAmount } from './currency'
 
 export const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api'
+// Upper bound for a single request. Long enough for a photo upload on a slow
+// link, short enough that a half-open connection cannot freeze the UI.
+const API_TIMEOUT_MS = 30_000
 
 // This module is the single browser-side boundary for API calls, local session
 // storage, third-party login, and common display helpers. Keeping those rules
@@ -88,7 +91,27 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     const token = safeGetLocalStorage('admin_token')
     if (token) headers.Authorization = `Bearer ${token}`
   }
-  const res = await fetch(`${API_BASE}${withCurrentLang(path, options)}`, { ...options, headers })
+  // A hung fetch leaves every caller's loading flag stuck (the order form's
+  // submit button stays disabled forever with no error shown). Abort after a
+  // bounded wait and surface a normal Error the views already know how to show.
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS)
+  const externalSignal = options.signal
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort()
+    else externalSignal.addEventListener('abort', () => controller.abort(), { once: true })
+  }
+  let res: Response
+  try {
+    res = await fetch(`${API_BASE}${withCurrentLang(path, options)}`, { ...options, headers, signal: controller.signal })
+  } catch (error: any) {
+    const aborted = error?.name === 'AbortError'
+    const timeoutError = new Error(aborted ? 'request timed out' : (error?.message || 'network request failed')) as Error & { status?: number }
+    timeoutError.status = aborted ? 408 : 0
+    throw timeoutError
+  } finally {
+    clearTimeout(timeout)
+  }
   if (!res.ok) {
     if (res.status === 401 && path.startsWith('/admin') && path !== '/admin/login') {
       safeRemoveLocalStorage('admin_token')
