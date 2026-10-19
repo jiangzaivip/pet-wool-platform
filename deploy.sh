@@ -308,6 +308,16 @@ if [ -f "${REMOTE_DIR}/deploy/install-nginx.sh" ] && [ "${DEPLOY_SKIP_NGINX:-}" 
   sudo bash "${REMOTE_DIR}/deploy/install-nginx.sh"
 fi
 
+# Ship the log rotation and the failure-notification template every deploy so the
+# host cannot drift back to "one unstructured log file that grows forever".
+if [ -f "${REMOTE_DIR}/deploy/pet-wool-logrotate.conf" ]; then
+  sudo install -m 0644 "${REMOTE_DIR}/deploy/pet-wool-logrotate.conf" /etc/logrotate.d/pet-wool
+fi
+if [ -f "${REMOTE_DIR}/deploy/pet-wool-alert@.service" ]; then
+  sudo install -m 0644 "${REMOTE_DIR}/deploy/pet-wool-alert@.service" "/etc/systemd/system/pet-wool-alert@.service"
+  sudo systemctl daemon-reload
+fi
+
 # Assert the hardening on the public origin, not just the loopback service: a
 # Certbot renewal that reverted the vhost must fail a deploy instead of quietly
 # shipping without HSTS/HTTP2.
