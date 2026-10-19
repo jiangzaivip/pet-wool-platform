@@ -1,5 +1,12 @@
 # WoolBuddy 上线前风险清单
 
+> **状态（2026-10-19 更新）**：这是 2026-09-29 的只读审计快照，保留作为整改依据。其中已处置的条目：
+> 默认管理员/Google demo 已关闭（scrypt 口令 + `GOOGLE_DEMO_LOGIN=false`）、后台登录加限流、
+> `/doc/` 反射 XSS 已修、类型检查与门禁已全绿并接入 CI、历史非 KRW 异常订单已归档清理、
+> 含密备份导出收紧为 owner 专用（默认导出脱敏）。
+> 仍未处置：客户照片仍是无需授权的公开 URL、单条 JSONB 存储（未拆表）、viewer 前端按钮未按角色隐藏、
+> 管理端未做服务端分页、webhook 无持久化重放/对账、systemd 以 root 运行。运维现状以 `OPERATIONS.md` 为准。
+
 > 事实核对日期：2026-09-29。逐条对着 `api-node/server.mjs`、`scripts/production-check.mjs` 和实际 `store.json` 复核过；未复核的结论不要写进发布门禁。
 
 ## 一、当前门禁实际状态

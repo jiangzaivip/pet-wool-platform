@@ -4,22 +4,24 @@
 
 ## 访问地址
 
-- 生产：`https://woolbuddy.shop`（Node 服务 systemd 单元 `pet-wool-platform`，由 `deploy.sh` 发布）
-- 测试机 `36.138.248.23:8888`（nginx 反代 Vite 开发服务 + `pet-wool-api:8082`）
+- 生产：`https://woolbuddy.shop`（Node 22 服务 systemd 单元 `pet-wool-platform`，监听 `127.0.0.1:8888`，nginx 443 反代；由 `deploy.sh` 发布）
+- 测试机 `36.138.248.23`：nginx 仅监听 `127.0.0.1:8888`（2026-10 起收回回环，公网 IP:8888 已不可达），反代 Vite 开发服务 + `pet-wool-api:8082`
 - 本机开发：`http://127.0.0.1:8888`
 
 ## 目录
 
 ```text
-api-node/        Node API（server.mjs）+ data/store.json + uploads/
+api-node/        Node API（server.mjs）+ data/store.json（JSON 后端/本地影子）+ uploads/
 frontend/        Vue 3 + Vite + TypeScript，前台与 /admin 同工程
-  src/api.ts     所有浏览器端 API 调用、token、错误归一化（视图不得绕过）
+  src/api.ts     所有浏览器端 API 调用、token、错误归一化、30s 超时（视图不得绕过）
   src/currency.ts 与 api-node/currency.mjs 的汇率表必须一致
 backend/         早期 Rust 草稿，线上未使用
+deploy/          nginx vhost、安装脚本、logrotate 配置、systemd 单元模板
 scripts/         校验、备份恢复、清理、发布打包脚本
-site-doc/        客户文档与原型（经 nginx /doc/ 暴露）
+site-doc/        客户文档与原型（前端 /doc/ 路由渲染，已设 noindex）
 test-results/    Playwright E2E 脚本、报告、截图
-docs/            运维与业务文档
+docs/            运维与业务文档（OPERATIONS.md 为运维唯一事实来源）
+.github/         CI（Node 22 上跑同一套门禁）
 ```
 
 ## 常用命令
@@ -42,19 +44,24 @@ npm run release:package                        # 打包 releases/*.tar.gz + sha2
 
 生产：nginx 443 → `127.0.0.1:8888`（Node 单体，前端静态 + API 同源）。
 
-测试机：nginx 8888 → `/` 反代 `pet-wool-frontend-dev`（Vite 5173），`/api`、`/uploads`、`/health` 反代 `pet-wool-api`（8082）。此处改 `frontend/src` 免构建即时生效。
+测试机：nginx 仅监听 `127.0.0.1:8888` → `/` 反代 `pet-wool-frontend-dev`（Vite 5173），`/api`、`/uploads`、`/health` 反代 `pet-wool-api`（8082）。此处改 `frontend/src` 免构建即时生效。
 
 ## 数据
 
-主数据源 `api-node/data/store.json`（gitignored，运行中不可手工编辑）。Postgres 为可选后端（`STORE_BACKEND=postgres` + `DATABASE_URL`），迁移导出 `npm run export:postgres`。
+生产主数据源是 PostgreSQL（`STORE_BACKEND=postgres`，表 `platform_runtime_store`，`id=1`）；`api-node/data/store.json` 是 JSON 后端/本地开发数据，在生产机上只是同步影子副本（gitignored，运行中不可手工编辑）。迁移导出工具 `npm run export:postgres` 只生成 staging SQL，不切换线上数据源。
 
 ```bash
+# 生产（Postgres）：pg_dump + 客户照片 tar，0600，保留 14 份，每日 pet-wool-sql-backup.timer
+sudo -n bash -c 'set -a; . ./.env; set +a; node scripts/backup-sql.mjs'
+# JSON 后端/本地
 node scripts/backup-data.mjs                                   # → api-node/backups/<时间戳>/
 node scripts/restore-data.mjs --dry-run api-node/backups/<时间戳>
 node scripts/restore-data.mjs --apply  api-node/backups/<时间戳>
 ```
 
-备份含完整 `store.json`，可能带 PayPal Secret 与 Webhook ID，按敏感文件保存；对外只发管理端"下载脱敏备份"。E2E 与清理脚本处理 `commercial-*`、`unpaid-*`、`blocked-*`、`payable-*`、`hidden-*` 等前缀数据。
+`restore-data.mjs` 在服务运行中或 `STORE_BACKEND=postgres` 时会拒绝执行；Postgres 恢复是 `psql "$DATABASE_URL" -f api-node/sql-backups/store-<时间戳>.sql` 并解包 `uploads-<时间戳>.tar.gz`。异机副本由 `pet-wool-offsite.timer` 每天拉到 `/root/pet-wool-offsite/snapshots/`（保留 21 天）。服务或备份单元失败会触发 `OnFailure=pet-wool-alert@%n.service`，用 `.env` 的 SMTP 发邮件到 `NOTIFY_ADMIN_EMAIL`。
+
+备份含客户 PII，可能带 PayPal Secret 与 Webhook ID，按敏感文件保存；对外只发管理端"下载脱敏备份"（`?secrets=1` 仅 owner 可用）。E2E 与清理脚本处理 `commercial-*`、`unpaid-*`、`blocked-*`、`payable-*`、`hidden-*` 等前缀数据。历史非 KRW 测试订单已由 `scripts/archive-non-krw-orders.mjs` 归档（0600 JSON）后清理。
 
 ## 管理端
 

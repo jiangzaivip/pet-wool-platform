@@ -10,7 +10,10 @@
 
 - `NODE_ENV=production`
 - `PUBLIC_BASE_URL=https://正式域名`
-- 非默认的管理员账号和密钥
+- `STORE_BACKEND=postgres` + `DATABASE_URL`（生产实际使用 PostgreSQL）
+- 非默认的管理员账号和密钥（支持 scrypt 哈希），以及 `USER_TOKEN_SECRET`
+- `GOOGLE_DEMO_LOGIN=false`
+- `NOTIFY_ADMIN_EMAIL`（失败告警收件人）与 `SMTP_*`
 - `PAYPAL_MOCK=false`
 - PayPal live Client ID、Secret、Webhook ID、模式和币种在管理后台配置
 
@@ -29,6 +32,11 @@ bash deploy.sh
 `deploy.sh` 会按 `frontend/package-lock.json` 安装前端依赖并构建，然后执行远端端口和数据检查、依赖安装、生产配置检查、
 PayPal OAuth 凭据探测、systemd 重启、健康检查和 smoke check。新版本验证失败
 会尝试恢复发布前备份。
+
+除代码之外，一次发布还会：用 `deploy/nginx/woolbuddy.shop.conf` 安装 vhost（`deploy/install-nginx.sh`）、安装
+`deploy/pet-wool-logrotate.conf` 到 `/etc/logrotate.d/pet-wool`、安装 `deploy/pet-wool-alert@.service`，
+并对**公网域名**断言 `Strict-Transport-Security`、`Content-Security-Policy` 与 HTTP/2——Certbot 续期把 vhost 改回去会让发布直接失败，
+而不是悄悄丢掉这些头。生产运行 Node 22（`/opt/node22`，`/usr/local/bin/node` 软链），`install-systemd.sh` 按 `command -v node` 写 `ExecStart`。
 
 默认必须重新构建前端。只有确认 `frontend/dist/` 已由已验证的源码构建生成，
 且当前机器暂时无法安装依赖时，才可以显式使用 `DEPLOY_SKIP_BUILD=true`；该开关不会跳过远端生产检查。
@@ -108,22 +116,52 @@ sudo journalctl -u pet-wool-platform -f
 
 ## 6. 数据备份和恢复
 
+生产使用 PostgreSQL，备份走 `scripts/backup-sql.mjs`（`pet-wool-sql-backup.timer` 每日执行）：
+
+```bash
+sudo -n bash -c 'set -a; . ./.env; set +a; node scripts/backup-sql.mjs'
+# → api-node/sql-backups/store-<时间戳>.sql（pg_dump）
+# → api-node/sql-backups/uploads-<时间戳>.tar.gz（客户照片）
+# 目录 0700、文件 0600、保留 14 份
+```
+
+恢复：停服后 `sudo -n systemctl stop pet-wool-platform`，`psql "$DATABASE_URL" -f api-node/sql-backups/store-<时间戳>.sql`，
+把 `uploads-<时间戳>.tar.gz` 解到 `api-node/`，再起服并 `curl -fsS http://127.0.0.1:8888/health`。
+
+JSON 后端（本地/测试机）仍用：
+
 ```bash
 node scripts/backup-data.mjs
 node scripts/restore-data.mjs --dry-run api-node/backups/<备份目录名>
 node scripts/restore-data.mjs --apply api-node/backups/<备份目录名>
 ```
 
-备份包含完整 `store.json` 和上传文件，可能包含 PayPal Secret 或 Webhook ID，
-必须按敏感文件保存。恢复脚本会在覆盖前自动创建恢复前备份。
+`restore-data.mjs` 在服务运行中或 `STORE_BACKEND=postgres` 时会拒绝执行（否则恢复出来的数据会被内存状态立刻覆盖）。
 
-## 7. nginx 可选反代
+异机副本：另一台机器上的 `pet-wool-offsite.timer` 每天 04:10 左右执行 `scripts/offsite-backup-pull.sh`，把
+`sql-backups/` 与 `backups/` 拉到 `/root/pet-wool-offsite/snapshots/<UTC 时间戳>/`，保留 21 天且至少留 3 份。
+服务启动失败或备份失败会触发 `OnFailure=pet-wool-alert@%n.service`，`scripts/notify-failure.sh` 用 `.env` 的 SMTP
+发邮件到 `NOTIFY_ADMIN_EMAIL`（`SMTP_FROM` 是带引号的显示名地址，脚本会归一化后再交给 curl）。
 
-如果使用 HTTPS 域名反代到当前服务：
+备份含完整数据库与客户照片，可能包含 PayPal Secret 或 Webhook ID，必须按敏感文件保存。
+
+## 7. nginx 反代（生产已自动化）
+
+生产 vhost 不再手工维护：`deploy/nginx/woolbuddy.shop.conf` 随每次发布由 `deploy/install-nginx.sh` 安装到
+`/etc/nginx/sites-enabled/woolbuddy.shop`，包含：
+
+- `listen 443 ssl http2`、www → apex 301、`server_tokens off`
+- `Strict-Transport-Security`、`Content-Security-Policy`、`Permissions-Policy`、`X-Frame-Options` 等安全头
+- `client_max_body_size 12m`、静态资源缓存与 gzip
+
+改 nginx 配置时改仓库里的文件再发布；不要直接改服务器上的 vhost（下次发布会覆盖，且公网头断言会先失败）。
+只改 `listen` 指令后需要 `systemctl restart nginx`——`reload` 会让旧 worker 继续持有旧套接字。
+
+下面的片段只作为最小参考，不要用它覆盖生产 vhost：
 
 ```nginx
 server {
-    listen 443 ssl;
+    listen 443 ssl http2;
     server_name example.com;
 
     location / {
