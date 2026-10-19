@@ -99,6 +99,7 @@ RELEASE_FILES=(
   scripts/verify-production-start.mjs
   scripts/cleanup-production-test-data.mjs
   scripts/remove-test-fixtures.mjs
+  scripts/hide-fixture-products.mjs
   scripts/generate-icons.py
   deploy/nginx/woolbuddy.shop.conf
   deploy/install-nginx.sh
@@ -266,6 +267,36 @@ for attempt in $(seq 1 20); do
 done
 
 BASE_URL="http://127.0.0.1:${SERVICE_PORT}" API_URL="http://127.0.0.1:${SERVICE_PORT}" bash "${REMOTE_DIR}/scripts/smoke-check.sh"
+
+# The vhost lives in the repo but nothing used to install it, so HTTP/2, HSTS,
+# CSP and the www canonical redirect silently drifted away from the source of
+# truth (and Certbot rewrites the file on renewal). Install it on every deploy:
+# the script only reloads after `nginx -t` passes, so a bad edit cannot take the
+# site down.
+if [ -f "${REMOTE_DIR}/deploy/install-nginx.sh" ] && [ "${DEPLOY_SKIP_NGINX:-}" != "1" ]; then
+  sudo bash "${REMOTE_DIR}/deploy/install-nginx.sh"
+fi
+
+# Assert the hardening on the public origin, not just the loopback service: a
+# Certbot renewal that reverted the vhost must fail a deploy instead of quietly
+# shipping without HSTS/HTTP2.
+PUBLIC_ORIGIN="$(sudo sed -n 's/^PUBLIC_BASE_URL=//p' "${REMOTE_DIR}/.env" 2>/dev/null | head -1 | tr -d '"' | tr -d '\r')"
+if [ -n "${PUBLIC_ORIGIN}" ]; then
+  HEADERS="$(curl -fsSI --max-time 15 "${PUBLIC_ORIGIN}/" | tr -d '\r' || true)"
+  case "${HEADERS}" in
+    *[Ss]trict-[Tt]ransport-[Ss]ecurity*) ;;
+    *) echo "public origin is missing Strict-Transport-Security: ${PUBLIC_ORIGIN}" >&2; exit 1 ;;
+  esac
+  case "${HEADERS}" in
+    *[Cc]ontent-[Ss]ecurity-[Pp]olicy*) ;;
+    *) echo "public origin is missing Content-Security-Policy: ${PUBLIC_ORIGIN}" >&2; exit 1 ;;
+  esac
+  HTTP_VERSION="$(curl -sS --http2 -o /dev/null --max-time 15 -w '%{http_version}' "${PUBLIC_ORIGIN}/" || echo 0)"
+  if [ "${HTTP_VERSION}" != "2" ]; then
+    echo "public origin negotiated HTTP/${HTTP_VERSION}, expected HTTP/2: ${PUBLIC_ORIGIN}" >&2
+    exit 1
+  fi
+fi
 deploy_ok=true
 echo "Deployment verified: ${SERVICE_NAME} on port ${SERVICE_PORT}"
 REMOTE_SCRIPT

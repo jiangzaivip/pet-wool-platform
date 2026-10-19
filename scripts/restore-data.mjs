@@ -1,6 +1,7 @@
 // Validates a backup before replacing live JSON data. Dry-run is the default;
 // --apply is required for the replacement step.
 import { copyFile, cp, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
@@ -229,6 +230,46 @@ if (dryRun) {
 // payment references). Aborting there means the operator can never recover from
 // the one situation they need recovery for. In that case preserve the damaged
 // file verbatim and continue: the incoming backup has already passed validation.
+//
+// Two configurations make this script a no-op at best and a data-loss event at
+// worst, so they are refused up front:
+//   * a live service holds the store in memory and rewrites the whole file on
+//     the next order/review/report, silently undoing the restore;
+//   * with STORE_BACKEND=postgres the deployment reads the database, not this
+//     file, so "restored" would mean nothing.
+function serviceRunning() {
+  for (const name of ['pet-wool-platform', 'pet-wool-api']) {
+    const result = spawnSync('systemctl', ['is-active', name], { encoding: 'utf8' })
+    if (String(result.stdout || '').trim() === 'active') return name
+  }
+  return ''
+}
+
+function configuredBackend() {
+  const fromEnv = String(process.env.STORE_BACKEND || '').trim().toLowerCase()
+  if (fromEnv) return fromEnv
+  try {
+    const text = readFileSync(path.join(rootDir, '.env'), 'utf8')
+    const match = text.match(/^\s*STORE_BACKEND\s*=\s*['"]?([a-z]+)['"]?\s*$/m)
+    return match ? match[1].toLowerCase() : 'json'
+  } catch {
+    return 'json'
+  }
+}
+
+if (apply) {
+  const backend = configuredBackend()
+  if (backend === 'postgres') {
+    console.error('STORE_BACKEND=postgres: this script only restores the JSON file. Restore the database with pg_restore (or switch STORE_BACKEND back first).')
+    process.exit(1)
+  }
+  const active = serviceRunning()
+  if (active && !args.includes('--force')) {
+    console.error(`${active} is running and will overwrite the restored file from memory. Stop it first (systemctl stop ${active}) or pass --force to override.`)
+    process.exit(1)
+  }
+}
+
 const backupResult = spawnSync(process.execPath, [path.join(rootDir, 'scripts', 'backup-data.mjs')], {
   cwd: rootDir,
   stdio: 'inherit',
