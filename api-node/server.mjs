@@ -1,4 +1,4 @@
-import { createHash, createHmac, createPublicKey, randomBytes, randomUUID, timingSafeEqual, verify as verifySignature } from 'node:crypto'
+import { createHash, createHmac, createPublicKey, randomBytes, randomUUID, scryptSync, timingSafeEqual, verify as verifySignature } from 'node:crypto'
 import { createServer } from 'node:http'
 import { connect as connectNet } from 'node:net'
 import { connect as connectTls } from 'node:tls'
@@ -126,11 +126,19 @@ const supportedLangs = ['zh', 'en', 'ko']
 const adminSessions = new Map()
 const uploadRateLimits = new Map()
 const orderLookupRateLimits = new Map()
+const adminLoginRateLimits = new Map()
 let googleCertsCache = { expires_at: 0, keys: [] }
 const adminSessionMs = 12 * 60 * 60 * 1000
 const userSessionMs = 30 * 24 * 60 * 60 * 1000
 const orderLookupRateLimitWindowMs = 10 * 60 * 1000
 const orderLookupRateLimitMax = 8
+// Admin passwords are the only credential standing between the internet and
+// every customer record, so a wrong guess must get expensive. Ten attempts per
+// IP+account per ten minutes, plus a per-IP ceiling that a rotating email list
+// cannot dodge.
+const adminLoginRateLimitWindowMs = 10 * 60 * 1000
+const adminLoginRateLimitMax = 10
+const adminLoginIpRateLimitMax = 30
 const userTokenSecret = process.env.USER_TOKEN_SECRET || process.env.ADMIN_SESSION_SECRET || adminPasswordHash
 const smtpConfig = {
   host: String(process.env.SMTP_HOST || '').trim(),
@@ -1593,6 +1601,14 @@ function buildRobots(origin) {
   ].join('\n')
 }
 
+// Products created for PayPal/e-mail testing must never reach a customer. The
+// probe in verify-core uses the same shape, so the two cannot drift.
+const FIXTURE_PRODUCT_SLUG = /(^|[-_])(test|testing|fixture|demo|probe|qa)([-_]|$)|-usd$/i
+
+function isFixtureProductSlug(slug) {
+  return FIXTURE_PRODUCT_SLUG.test(String(slug || ''))
+}
+
 function buildSitemap(store, origin) {
   const urls = new Set([
     '/',
@@ -1604,7 +1620,6 @@ function buildSitemap(store, origin) {
     '/policies/refund',
     '/policies/shipping',
     '/policies/cookies',
-    '/doc/',
   ])
   const publicCategories = (store.categories || []).filter((category) => category.status !== 'hidden')
   for (const category of publicCategories) {
@@ -1614,6 +1629,10 @@ function buildSitemap(store, origin) {
     }
   }
   for (const product of store.products || []) {
+    // A test/fixture product that leaks into the catalog is reachable, linkable
+    // and chargeable on a live PayPal account. It must never be advertised to a
+    // crawler even if someone re-publishes it by accident.
+    if (isFixtureProductSlug(product.slug)) continue
     if (product.slug && isPublicOrderableProduct(product, publicCategories)) {
       urls.add(`/products/${encodeURIComponent(product.slug)}`)
     }
@@ -1920,32 +1939,51 @@ function seoMetaFor(pathname, store, origin) {
 
   if (!entry.title) entry = SEO_FALLBACK.home
   if (!entry.description) entry = { ...entry, description: SEO_FALLBACK.home.description }
-  const canonical = `${origin}${normalized === '/' ? '/' : normalized}`
+  // `normalized` has already been URL-decoded, so re-encode every segment before
+  // it reaches an attribute. Without this, a path like
+  // /doc/"><script>…</script> is echoed straight into <link rel=canonical>.
+  const canonicalPath = normalized === '/'
+    ? '/'
+    : normalized.split('/').map((segment) => encodeURIComponent(segment)).join('/')
+  const canonical = `${origin}${canonicalPath}`.slice(0, 300)
   const imageUrl = image ? (image.startsWith('http') ? image : `${origin}${image.startsWith('/') ? '' : '/'}${image}`) : `${origin}/assets/home-after.webp`
   return { ...entry, canonical, image: imageUrl }
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 function renderSeoHtml(html, seo) {
   if (!seo) return html
+  const title = escapeHtml(seo.title)
+  const description = escapeHtml(seo.description)
+  const canonical = escapeHtml(seo.canonical)
+  const image = escapeHtml(seo.image)
   // The <title> is handled by the replacement below; including it here too would
   // leave the document with two of them.
   const tags = [
-    `<meta name="description" content="${seo.description}">`,
+    `<meta name="description" content="${description}">`,
     `<meta property="og:type" content="website">`,
-    `<meta property="og:title" content="${seo.title}">`,
-    `<meta property="og:description" content="${seo.description}">`,
-    `<meta property="og:url" content="${seo.canonical}">`,
-    `<meta property="og:image" content="${seo.image}">`,
+    `<meta property="og:title" content="${title}">`,
+    `<meta property="og:description" content="${description}">`,
+    `<meta property="og:url" content="${canonical}">`,
+    `<meta property="og:image" content="${image}">`,
     `<meta property="og:site_name" content="WoolBuddy">`,
     `<meta name="twitter:card" content="summary_large_image">`,
-    `<meta name="twitter:title" content="${seo.title}">`,
-    `<meta name="twitter:description" content="${seo.description}">`,
-    `<meta name="twitter:image" content="${seo.image}">`,
-    `<link rel="canonical" href="${seo.canonical}">`,
+    `<meta name="twitter:title" content="${title}">`,
+    `<meta name="twitter:description" content="${description}">`,
+    `<meta name="twitter:image" content="${image}">`,
+    `<link rel="canonical" href="${canonical}">`,
   ].join('\n    ')
   // Replace the placeholder title rather than appending, so the document has
   // exactly one <title>.
-  const withTitle = html.replace(/<title>[\s\S]*?<\/title>/, `<title>${seo.title}</title>`)
+  const withTitle = html.replace(/<title>[\s\S]*?<\/title>/, `<title>${title}</title>`)
   return withTitle.includes('</head>') ? withTitle.replace('</head>', `  ${tags}\n  </head>`) : withTitle
 }
 
@@ -2240,6 +2278,13 @@ function validateOrderTransition(order, input = {}, field = '') {
   const nextTracking = 'tracking_no' in input ? String(input.tracking_no || '').trim() : String(order.tracking_no || '').trim()
   if (['shipped', 'completed'].includes(nextOrderStatus) && (!nextCarrier || !nextTracking)) return 'shipping tracking required'
   if (field === 'payment' && ['shipped', 'completed'].includes(order.order_status) && nextPaymentStatus !== 'refunded' && nextPaymentStatus !== 'paid') return 'shipped or completed order payment cannot be downgraded'
+  // Money was actually received. Flipping the order back to unpaid zeroes
+  // paid_amount_cents and writes no reversing record, so the next balance
+  // payment would charge the customer a second time for the same deposit.
+  // A refund must be recorded as `refunded`, which books a negative payment.
+  if (field === 'payment' && nextPaymentStatus === 'unpaid' && ['paid', 'deposit_paid'].includes(order.payment_status)) {
+    return 'paid order cannot be marked unpaid; record a refund instead'
+  }
   if (nextOrderStatus === 'cancelled' && ['paid', 'deposit_paid'].includes(effectivePaymentStatus)) return 'paid order cannot be cancelled before refund'
   return ''
 }
@@ -3267,6 +3312,65 @@ function checkOrderLookupRateLimit(req, email) {
   return true
 }
 
+// Admin login throttling: one bucket per IP+account and one per IP.
+function checkAdminLoginRateLimit(req, email) {
+  const timestamp = Date.now()
+  const ip = clientIp(req)
+  const emailKey = `${ip}:${emailFingerprint(email)}`
+  const prune = (map, limit) => {
+    if (map.size <= limit) return
+    for (const [key, items] of map.entries()) {
+      const active = items.filter((item) => timestamp - item < adminLoginRateLimitWindowMs)
+      if (active.length) map.set(key, active)
+      else map.delete(key)
+    }
+  }
+  const attempt = (map, key, max) => {
+    const recent = (map.get(key) || []).filter((item) => timestamp - item < adminLoginRateLimitWindowMs)
+    if (recent.length >= max) {
+      map.set(key, recent)
+      return false
+    }
+    recent.push(timestamp)
+    map.set(key, recent)
+    return true
+  }
+  const accountOk = attempt(adminLoginRateLimits, emailKey, adminLoginRateLimitMax)
+  const ipOk = attempt(adminLoginRateLimits, `ip:${ip}`, adminLoginIpRateLimitMax)
+  prune(adminLoginRateLimits, 5000)
+  return accountOk && ipOk
+}
+
+function clearAdminLoginRateLimit(req, email) {
+  adminLoginRateLimits.delete(`${clientIp(req)}:${emailFingerprint(email)}`)
+}
+
+// Admin passwords are stored either as scrypt$<salt>$<hex> (preferred) or as a
+// bare sha256 hex digest from older deployments. Both comparisons are
+// constant-time; the legacy format keeps existing installs working until the
+// hash is rotated.
+function adminPasswordMatches(input, stored) {
+  const candidate = String(input ?? '')
+  const expected = String(stored || '').trim()
+  if (!expected) return false
+  if (expected.startsWith('scrypt$')) {
+    const [, salt, hex] = expected.split('$')
+    if (!salt || !hex) return false
+    let target
+    try {
+      target = Buffer.from(hex, 'hex')
+    } catch {
+      return false
+    }
+    if (!target.length) return false
+    const derived = scryptSync(candidate, salt, target.length)
+    return derived.length === target.length && timingSafeEqual(derived, target)
+  }
+  const digest = Buffer.from(createHash('sha256').update(candidate).digest('hex'))
+  const target = Buffer.from(expected)
+  return digest.length === target.length && timingSafeEqual(digest, target)
+}
+
 function signUserPayload(payload) {
   return createHmac('sha256', userTokenSecret).update(payload).digest('base64url')
 }
@@ -3343,7 +3447,11 @@ function validateCustomerOrderAccess(req, order = {}, payment = null) {
 // compared in constant time and never logged.
 function validateGuestOrderPossession(req, order = {}) {
   const user = currentUser(req)
-  if (user?.email) return ''
+  // A signed-in caller is not a guest. Returning '' merely because a token was
+  // present let any logged-in account open a payment intent for any order id and
+  // receive that order's capture_secret; the email proof lives in
+  // validateCustomerOrderAccess and must decide this case.
+  if (user?.email) return 'order access denied'
   if (secretsMatch(req.headers['x-order-secret'], order?.client_request_id)) return ''
   return 'order access denied'
 }
@@ -3917,11 +4025,60 @@ function localizeSite(site, lang) {
 
 // Backups are safe by default. Secret-bearing fields are only included by the
 // explicitly confirmed full-backup path in the admin API.
+function maskEmail(value) {
+  const text = String(value || '').trim()
+  const at = text.indexOf('@')
+  if (at < 1) return text ? '***' : ''
+  return `${text.slice(0, 1)}***${text.slice(at)}`
+}
+
+function maskPhone(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  return `***${text.slice(-2)}`
+}
+
+function maskAddress(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  return `${text.slice(0, 4)}***`
+}
+
+// The redacted export is the one an operator is told is safe to hand to a third
+// party, so customer identifiers must actually be gone. Hiding the PayPal
+// secret while shipping every address, phone number and payment capture secret
+// is a redaction in name only.
 function redactBackupStore(store = {}) {
   const backup = JSON.parse(JSON.stringify(store))
   if (backup.site?.paypal) {
     delete backup.site.paypal.secret
     delete backup.site.paypal.webhook_id
+  }
+  if (backup.site?.smtp) {
+    delete backup.site.smtp.password
+    delete backup.site.smtp.user
+  }
+  for (const order of backup.orders || []) {
+    order.email = maskEmail(order.email)
+    order.phone = maskPhone(order.phone)
+    order.shipping_address = maskAddress(order.shipping_address)
+    order.customer_name = order.customer_name ? `${String(order.customer_name).slice(0, 1)}***` : ''
+    delete order.client_request_id
+    delete order.paypal_order_id
+  }
+  for (const payment of backup.payments || []) {
+    delete payment.capture_secret
+    delete payment.paypal_order_id
+    delete payment.paypal_capture_id
+  }
+  for (const user of backup.users || []) {
+    user.email = maskEmail(user.email)
+    user.name = user.name ? `${String(user.name).slice(0, 1)}***` : ''
+    delete user.google_sub
+  }
+  for (const report of backup.client_reports || []) {
+    delete report.ip
+    delete report.user_agent
   }
   return backup
 }
@@ -4506,6 +4663,12 @@ function paypalCaptureDetails(paypalOrder = {}) {
     currency: capture.amount?.currency_code || purchaseUnit.amount?.currency_code || '',
     paid_at: capture.update_time || capture.create_time || '',
   }
+}
+
+function restoreStoreState(snapshot) {
+  const parsed = JSON.parse(snapshot)
+  for (const key of Object.keys(store)) delete store[key]
+  Object.assign(store, parsed)
 }
 
 function applyCapturedPaypalPayment(order, payment, capture = {}) {
@@ -5384,10 +5547,16 @@ async function handle(req, res) {
       const captureValidation = validatePaypalCaptureAmount(payment, capture)
       if (captureValidation) return send(res, 409, { message: captureValidation }, privateNoStoreHeaders)
     }
+    // A failed write must not leave the in-memory store claiming the payment was
+    // captured: the retry would then hit the `status === 'captured'` early
+    // return and never persist, so PayPal has the money and the disk says
+    // unpaid. Snapshot, apply, persist, and roll back on failure.
+    const stateBeforeCapture = JSON.stringify(store)
     applyCapturedPaypalPayment(order, payment, capture)
     try {
       await saveStore(store)
     } catch (error) {
+      restoreStoreState(stateBeforeCapture)
       log('error', 'business.payment_capture_save_failed', {
         request_id: req.request_id,
         order_id: order.id,
@@ -5436,9 +5605,21 @@ async function handle(req, res) {
     })
     try {
       await verifyPaypalWebhook(req, store.site, event)
-      const changed = await applyPaypalWebhookEvent(store, event)
+      const stateBeforeWebhook = JSON.stringify(store)
+      let changed = false
+      try {
+        changed = await applyPaypalWebhookEvent(store, event)
+      } catch (error) {
+        restoreStoreState(stateBeforeWebhook)
+        throw error
+      }
       if (changed) {
-        await saveStore(store)
+        try {
+          await saveStore(store)
+        } catch (error) {
+          restoreStoreState(stateBeforeWebhook)
+          throw error
+        }
         const paypalOrderId = paypalOrderIdFromWebhook(event)
         const paypalCaptureId = paypalCaptureIdFromWebhook(event)
         const payment = store.payments.find((item) => (
@@ -5469,9 +5650,14 @@ async function handle(req, res) {
 
   if (req.method === 'POST' && route === '/admin/login') {
     const input = await readJson(req)
-    const hash = createHash('sha256').update(input.password || '').digest('hex')
-    const account = adminAccounts.find((item) => item.email === String(input.email || '').trim().toLowerCase())
-    if (account && hash === account.password_hash) {
+    const email = String(input.email || '').trim().toLowerCase()
+    if (!checkAdminLoginRateLimit(req, email)) {
+      log('warn', 'auth.admin_login_rate_limited', { request_id: req.request_id, email })
+      return send(res, 429, { message: 'too many login attempts' }, privateNoStoreHeaders)
+    }
+    const account = adminAccounts.find((item) => item.email === email)
+    if (account && adminPasswordMatches(input.password, account.password_hash)) {
+      clearAdminLoginRateLimit(req, email)
       const token = `admin-${randomUUID()}`
       adminSessions.set(token, { email: account.email, role: account.role, expires_at: Date.now() + adminSessionMs })
       log('info', 'auth.admin_login_succeeded', {
@@ -5679,7 +5865,16 @@ async function handle(req, res) {
 
   if (req.method === 'GET' && route === '/admin/backup') {
     const includeSecrets = url.searchParams.get('secrets') === '1'
-    if (includeSecrets && !requireSecretBackupConfirm(req)) return send(res, 400, { message: 'secret backup confirmation required' })
+    if (includeSecrets) {
+      // A full export carries PayPal credentials and every customer record, so
+      // it is not a read-only convenience: a `viewer` account must not be able
+      // to pull it, and the confirm header alone is not an independent factor.
+      const admin = currentAdmin(req)
+      if (admin?.role !== 'owner') {
+        return send(res, 403, { message: 'owner role required for secret backup' }, privateNoStoreHeaders)
+      }
+      if (!requireSecretBackupConfirm(req)) return send(res, 400, { message: 'secret backup confirmation required' }, privateNoStoreHeaders)
+    }
     const backupKind = includeSecrets ? 'full' : 'redacted'
     return send(res, 200, {
       exported_at: now(),

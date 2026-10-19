@@ -15,11 +15,14 @@
 
 const ZONE_DEFAULTS = {
   domestic: { label: 'Domestic', currency: 'KRW', cents: 0, days: '3-7' },
-  asia: { label: 'Asia', currency: 'KRW', cents: 1800000, days: '7-14' },
-  europe: { label: 'Europe', currency: 'KRW', cents: 3200000, days: '10-18' },
-  north_america: { label: 'North America', currency: 'KRW', cents: 3800000, days: '10-20' },
-  oceania: { label: 'Oceania', currency: 'KRW', cents: 4200000, days: '12-22' },
-  other: { label: 'Other', currency: 'KRW', cents: 5200000, days: '14-28' },
+  // KRW has zero decimals (currency.mjs), so these are whole won — not cents.
+  // The 100x values that lived here (1800000 = ₩1,800,000) would have quoted
+  // a ₩18,000 parcel as more than the product itself.
+  asia: { label: 'Asia', currency: 'KRW', cents: 18000, days: '7-14' },
+  europe: { label: 'Europe', currency: 'KRW', cents: 32000, days: '10-18' },
+  north_america: { label: 'North America', currency: 'KRW', cents: 38000, days: '10-20' },
+  oceania: { label: 'Oceania', currency: 'KRW', cents: 42000, days: '12-22' },
+  other: { label: 'Other', currency: 'KRW', cents: 52000, days: '14-28' },
 }
 
 // Region membership is a business decision, so it is data rather than code and
@@ -32,10 +35,10 @@ export const DEFAULT_COUNTRY_ZONES = {
   AU: 'oceania', NZ: 'oceania',
 }
 
-// Free above this product subtotal, in base minor units (KRW cents here).
+// Free above this product subtotal, in base minor units (KRW here, so won).
 // Handmade pieces ship in one small box, so an order that already carries a
 // large sculpture should not also carry a shipping line.
-export const DEFAULT_FREE_SHIPPING_THRESHOLD_CENTS = 5000000
+export const DEFAULT_FREE_SHIPPING_THRESHOLD_CENTS = 500000
 
 export function normalizeCountry(value = '') {
   return String(value || '').trim().toUpperCase()

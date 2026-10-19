@@ -53,6 +53,17 @@ export function validatePayableOrder(order = {}) {
   if (order.payment_status === 'refunded') return 'refunded order cannot be paid'
   if (['paid', 'deposit_paid'].includes(order.payment_status)) return 'order already paid'
   if (!['unpaid', 'balance_due'].includes(order.payment_status)) return 'invalid payment status'
+  // Money invariants. The KRW migration rewrote product prices but not order
+  // rows, which left USD/CNY orders carrying a KRW amount_cents: the balance
+  // then read as $2,904 on a piece quoted at ~$220. Refuse to open a payment
+  // against an order whose own numbers disagree instead of billing it.
+  const total = Number(order.amount_cents)
+  const paid = Number(order.paid_amount_cents ?? 0)
+  const initial = Number(order.initial_payment_cents ?? 0)
+  if (!positiveMinor(total)) return 'invalid order amount'
+  if (!Number.isSafeInteger(paid) || paid < 0) return 'invalid paid amount'
+  if (paid > total) return 'paid amount exceeds order total'
+  if (initial > 0 && initial > total) return 'initial payment exceeds order total'
   return ''
 }
 
